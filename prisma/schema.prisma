@@ -1,0 +1,79 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  email     String   @unique
+  password  String
+  name      String?
+  role      String   // "admin" | "cashier"
+  createdAt DateTime @default(now())
+}
+
+model Product {
+  id          Int         @id @default(autoincrement())
+  sku         String?     
+  name        String
+  description String?
+  price       Float
+  taxable     Boolean     @default(true)
+  createdAt   DateTime    @default(now())
+
+  inventory   Inventory?
+  saleItems   SaleItem[]  // <-- Add this relation field
+}
+
+model Inventory {
+  id         Int     @id @default(autoincrement())
+  productId  Int     @unique
+  quantity   Int     @default(0)
+  location   String? // e.g. "store-1"
+  product    Product @relation(fields: [productId], references: [id])
+}
+
+model Customer {
+  id    Int    @id @default(autoincrement())
+  name  String
+  phone String?
+  email String?
+}
+
+model Sale {
+  id          Int        @id @default(autoincrement())
+  createdAt   DateTime   @default(now())
+  userId      Int
+  customerId  Int?
+  subtotal    Float
+  tax         Float
+  total       Float
+  payment     Payment?
+  items       SaleItem[]
+  status      String     @default("completed") // pending, refunded
+}
+
+model SaleItem {
+  id        Int     @id @default(autoincrement())
+  saleId    Int
+  productId Int
+  qty       Int
+  price     Float
+
+  sale      Sale    @relation(fields: [saleId], references: [id])
+  product   Product @relation(fields: [productId], references: [id])
+}
+
+model Payment {
+  id        Int     @id @default(autoincrement())
+  saleId    Int     @unique
+  method    String  // "cash", "card", "gift"
+  amount    Float
+  provider  String? // "stripe"
+  providerRef String?
+  sale      Sale    @relation(fields: [saleId], references: [id])
+}
