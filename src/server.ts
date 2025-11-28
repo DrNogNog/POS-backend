@@ -13,17 +13,23 @@ const app = express();
 const server = http.createServer(app);
 const io = new SocketIOServer(server, { cors: { origin: true }});
 const prisma = new PrismaClient();
-
+import path from 'path';
 app.use(cors());
-app.use(express.json());
 
-app.use('/api/auth', authRoutes(prisma));
+// ⭐ Serve uploaded images
+const uploadDir = path.join(process.cwd(), "uploads");
+app.use("/uploads", express.static(uploadDir));
+
+// Only parse JSON for routes that expect JSON
+app.use('/api/auth', express.json(), authRoutes(prisma));
+app.use('/api/sales', express.json(), saleRoutes(prisma, io));
+
+// Products route uses multer for multipart/form-data
 app.use('/api/products', productRoutes(prisma));
-app.use('/api/sales', saleRoutes(prisma, io)); // pass io for realtime
 
 io.on('connection', socket => {
   console.log('socket connected', socket.id);
 });
 
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => console.log(`API listening ${PORT}`));
+server.listen(PORT, () => console.log(`API listening on ${PORT}`));

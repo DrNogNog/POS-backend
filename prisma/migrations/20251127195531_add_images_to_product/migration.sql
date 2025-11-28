@@ -13,9 +13,10 @@ CREATE TABLE "User" (
 -- CreateTable
 CREATE TABLE "Product" (
     "id" SERIAL NOT NULL,
-    "sku" TEXT NOT NULL,
+    "sku" TEXT DEFAULT '',
     "name" TEXT NOT NULL,
     "description" TEXT,
+    "images" TEXT[] DEFAULT ARRAY[]::TEXT[],
     "price" DOUBLE PRECISION NOT NULL,
     "taxable" BOOLEAN NOT NULL DEFAULT true,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -82,9 +83,6 @@ CREATE TABLE "Payment" (
 
 -- CreateIndex
 CREATE UNIQUE INDEX "User_email_key" ON "User"("email");
-
--- CreateIndex
-CREATE UNIQUE INDEX "Product_sku_key" ON "Product"("sku");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "Inventory_productId_key" ON "Inventory"("productId");
