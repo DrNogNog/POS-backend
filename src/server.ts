@@ -1,35 +1,60 @@
+// src/server.ts
 import express from 'express';
 import cors from 'cors';
 import http from 'http';
 import { Server as SocketIOServer } from 'socket.io';
 import dotenv from 'dotenv';
 import { PrismaClient } from '@prisma/client';
+import path from 'path';
+
+// Import routes
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';
 import saleRoutes from './routes/sales.js';
 
+import estimateRoutes from './routes/estimates.js';
+
+// Load .env (critical for DATABASE_URL)
 dotenv.config();
+
+// Create PrismaClient with correct config for Prisma 7+
+const prisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.DATABASE_URL ?? "postgresql://localhost:5432/placeholder",
+    },
+  },
+});
+
+// Graceful shutdown
+process.on('SIGINT', async () => {
+  await prisma.$disconnect();
+  process.exit(0);
+});
+
 const app = express();
 const server = http.createServer(app);
-const io = new SocketIOServer(server, { cors: { origin: true }});
-const prisma = new PrismaClient();
-import path from 'path';
-app.use(cors());
+const io = new SocketIOServer(server, { cors: { origin: true } });
 
-// ⭐ Serve uploaded images
+// Middleware
+app.use(cors());
+app.use(express.json()); // Safe to use globally now
+
+// Serve uploaded images
 const uploadDir = path.join(process.cwd(), "uploads");
 app.use("/uploads", express.static(uploadDir));
 
-// Only parse JSON for routes that expect JSON
-app.use('/api/auth', express.json(), authRoutes(prisma));
-app.use('/api/sales', express.json(), saleRoutes(prisma, io));
-
-// Products route uses multer for multipart/form-data
-app.use('/api/products', productRoutes(prisma));
-
-io.on('connection', socket => {
-  console.log('socket connected', socket.id);
+// Routes
+app.use("/api/auth", authRoutes(prisma));                 // Auth
+app.use("/api/products", productRoutes(prisma));          // Products (with multer)
+app.use("/api/sales", saleRoutes(prisma, io));            // Sales + socket
+app.use("/api/estimates", estimateRoutes(prisma));
+// Socket.io
+io.on('connection', (socket) => {
+  console.log('Client connected:', socket.id);
 });
 
 const PORT = process.env.PORT || 4000;
-server.listen(PORT, () => console.log(`API listening on ${PORT}`));
+server.listen(PORT, () => {
+  console.log(`Server running on http://localhost:${PORT}`);
+});

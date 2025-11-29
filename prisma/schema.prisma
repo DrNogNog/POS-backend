@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  engineType = "binary"
 }
 
 datasource db {
@@ -17,64 +18,79 @@ model User {
 }
 
 model Product {
-  id          Int         @id @default(autoincrement())
-  sku         String?     @default("")
+  id          Int      @id @default(autoincrement())
+  sku         String?  @default("")
   name        String
   description String?
-  images      String[]    @default([])
+  images      String[] @default([])
+  stock       Int      @default(0)
   price       Float
-  taxable     Boolean     @default(true)
-  createdAt   DateTime    @default(now())
-
-  inventory   Inventory?   @relation("ProductInventory")
-  saleItems   SaleItem[]   @relation("ProductSaleItems")
+  taxable     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  inventory   Inventory? @relation("ProductInventory")
+  saleItems   SaleItem[] @relation("ProductSaleItems")
 }
 
 model Inventory {
-  id         Int      @id @default(autoincrement())
-  productId  Int      @unique
-  quantity   Int      @default(0)
-  location   String?  // e.g. "store-1"
-  product    Product  @relation("ProductInventory", fields: [productId], references: [id])
+  id        Int     @id @default(autoincrement())
+  productId Int     @unique
+  quantity  Int     @default(0)
+  location  String? // e.g. "store-1"
+  product   Product @relation("ProductInventory", fields: [productId], references: [id])
 }
 
 model Customer {
-  id    Int    @id @default(autoincrement())
+  id    Int     @id @default(autoincrement())
   name  String
   phone String?
   email String?
 }
 
 model Sale {
-  id          Int        @id @default(autoincrement())
-  createdAt   DateTime   @default(now())
-  userId      Int
-  customerId  Int?
-  subtotal    Float
-  tax         Float
-  total       Float
-  payment     Payment?
-  items       SaleItem[]
-  status      String     @default("completed") // pending, refunded
+  id         Int       @id @default(autoincrement())
+  createdAt  DateTime  @default(now())
+  userId     Int
+  customerId Int?
+  subtotal   Float
+  tax        Float
+  total      Float
+  payment    Payment?
+  items      SaleItem[]
+  status     String    @default("completed") // pending, refunded
 }
 
 model SaleItem {
-  id        Int      @id @default(autoincrement())
+  id        Int  @id @default(autoincrement())
   saleId    Int
   productId Int
   qty       Int
   price     Float
-
-  sale      Sale     @relation(fields: [saleId], references: [id])
-  product   Product  @relation("ProductSaleItems", fields: [productId], references: [id])
+  sale      Sale @relation(fields: [saleId], references: [id])
+  product   Product @relation("ProductSaleItems", fields: [productId], references: [id])
 }
 
 model Payment {
-  id          Int     @id @default(autoincrement())
-  saleId      Int     @unique
-  method      String  // "cash", "card", "gift"
-  amount      Float
-  provider    String? // "stripe"
-  providerRef String?
-  sale        Sale    @relation(fields: [saleId], references: [id])
+  id           Int     @id @default(autoincrement())
+  saleId       Int     @unique
+  method       String  // "cash", "card", "gift"
+  amount       Float
+  provider     String? // "stripe"
+  providerRef  String?
+  sale         Sale    @relation(fields: [saleId], references: [id])
+}
+
+model Estimate {
+  id          Int      @id @default(autoincrement())
+  estimateNo  String
+  date        DateTime
+  customer    String
+  billTo      String
+  shipTo      String
+  subtotal    Float
+  discount    Float
+  total       Float
+  pdfData     Bytes
+  createdAt   DateTime @default(now())
+  userId      Int?
+  approved    Boolean  @default(false)
 }
