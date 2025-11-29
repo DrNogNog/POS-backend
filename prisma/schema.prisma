@@ -80,17 +80,27 @@ model Payment {
 }
 
 model Estimate {
-  id          Int      @id @default(autoincrement())
-  estimateNo  String
-  date        DateTime
-  customer    String
-  billTo      String
-  shipTo      String
-  subtotal    Float
-  discount    Float
-  total       Float
-  pdfData     Bytes
-  createdAt   DateTime @default(now())
-  userId      Int?
-  approved    Boolean  @default(false)
+  id            Int       @id @default(autoincrement())
+  estimateNo    String    @unique
+  date          DateTime
+  billTo        String
+  shipTo        String
+  subtotal      Float
+  discount      Float
+  total         Float
+  pdfData       Bytes
+  approved      Boolean   @default(false)
+  invoiced      Boolean   @default(false)
+  createdAt     DateTime  @default(now())
+  userId        Int?
+
+  // Optional / extra fields
+  companyName   String? 
+  companyAddr1  String?
+  companyAddr2  String?
+  phone         String?
+  fax           String?
+  email         String?
+  website       String?
+  items         Json?
 }
