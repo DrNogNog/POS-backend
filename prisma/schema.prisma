@@ -19,15 +19,18 @@ model User {
 
 model Product {
   id          Int      @id @default(autoincrement())
-  sku         String?  @default("")
   name        String
-  description String?
-  images      String[] @default([])
-  stock       Int      @default(0)
+  sku         String? 
   price       Float
-  taxable     Boolean  @default(true)
-  createdAt   DateTime @default(now())
+  description String?
+  stock       Int      @default(0)
+  stockCounts Int      @default(0)
+  // If you want categories and vendors, define them properly:
+  categories  String?   // optional single category
+  vendors     String[]  // array of strings
+  images      String[]  // array of strings
 }
+
 
 
 model Estimate {

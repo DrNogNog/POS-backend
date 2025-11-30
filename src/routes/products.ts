@@ -1,6 +1,6 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { PrismaClient } from "@prisma/client";
+import { PrismaClient, Prisma } from "@prisma/client";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -8,39 +8,58 @@ import fs from "fs";
 export default function (prisma: PrismaClient) {
   const router = Router();
 
+  // -----------------------------
   // Ensure uploads folder exists
+  // -----------------------------
   const uploadDir = path.join(process.cwd(), "uploads");
-  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-  // Multer disk storage with sanitized filenames
+  // -----------------------------
+  // Multer storage config
+  // -----------------------------
   const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, uploadDir),
     filename: (_req, file, cb) => {
       const timestamp = Date.now();
       const ext = path.extname(file.originalname);
       const name = path.basename(file.originalname, ext)
-        .replace(/\s+/g, "_") // replace spaces with _
-        .replace(/[^a-zA-Z0-9_-]/g, ""); // remove unsafe chars
-      const uniqueName = `${timestamp}-${name}${ext}`;
-      cb(null, uniqueName);
+        .replace(/\s+/g, "_")
+        .replace(/[^a-zA-Z0-9_-]/g, "");
+      cb(null, `${timestamp}-${name}${ext}`);
     },
   });
 
-
-  const upload = multer({ storage });
+  const upload = multer({
+    storage,
+    fileFilter: (_req, file, cb) => {
+      const allowed = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
+      if (allowed.includes(file.mimetype)) cb(null, true);
+      else cb(new Error("Invalid file type"));
+    },
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  });
 
   // -----------------------------
-  // GET /products?q=searchTerm
+  // GET /products?q=search
   // -----------------------------
   router.get("/", async (req: Request, res: Response) => {
     try {
-      const q = String(req.query.q || "");
-      const whereClause = q
-        ? { name: { contains: q, mode: "insensitive" as const } }
-        : undefined;
+      const q = String(req.query.q || "").trim();
+
+      let where: Prisma.ProductWhereInput | undefined = undefined;
+      if (q) {
+        where = {
+          OR: [
+            { name: { contains: q, mode: "insensitive" } },
+            { sku: { contains: q, mode: "insensitive" } },
+            { categories: { contains: q, mode: "insensitive" } },
+            { vendors: { has: q } }, // assuming vendors is string[]
+          ],
+        };
+      }
 
       const products = await prisma.product.findMany({
-        ...(whereClause ? { where: whereClause } : {}),
+        where,
         take: 100,
       });
 
@@ -52,25 +71,26 @@ export default function (prisma: PrismaClient) {
   });
 
   // -----------------------------
-  // POST /products — supports FormData (images)
+  // POST /products — create product
   // -----------------------------
   router.post("/", upload.array("images"), async (req: Request, res: Response) => {
     try {
-      const { name, price, description, sku } = req.body;
-      const files = req.files as Express.Multer.File[] | undefined;
+      const { name, price, description, sku, categories, stock, stockCounts, vendors } = req.body;
+      if (!name || !price) return res.status(400).json({ error: "Name and price are required" });
 
-      // Save only sanitized filenames in DB
-       const images = files?.map((file) => {
-        console.log("Saved filename:", file.filename); // <--- check this
-        return file.filename;
-      }) || [];
+      const files = req.files as Express.Multer.File[] | undefined;
+      const images = files?.map((f) => f.filename) || [];
 
       const product = await prisma.product.create({
         data: {
           name,
           price: parseFloat(price),
-          description,
-          sku,
+          description: description || "",
+          sku: sku || "",
+          categories: categories || "",
+          stock: stock ? Number(stock) : 0,
+          stockCounts: stockCounts ? Number(stockCounts) : 0,
+          vendors: vendors ? vendors.split(",").map((v) => v.trim()) : [],
           images,
         },
       });
@@ -78,7 +98,41 @@ export default function (prisma: PrismaClient) {
       res.json(product);
     } catch (err) {
       console.error(err);
-      res.status(500).send("Error creating product");
+      res.status(500).json({ error: "Failed to create product" });
+    }
+  });
+
+  // -----------------------------
+  // PUT /products/:id — update product
+  // -----------------------------
+  router.put("/:id", upload.array("images"), async (req: Request, res: Response) => {
+    try {
+      const id = Number(req.params.id);
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+
+      const { name, price, description, sku, categories, stock, stockCounts, vendors } = req.body;
+      const files = req.files as Express.Multer.File[] | undefined;
+      const images = files?.map((f) => f.filename);
+
+      const updatedProduct = await prisma.product.update({
+        where: { id },
+        data: {
+          name,
+          price: price ? parseFloat(price) : undefined,
+          description,
+          sku,
+          categories,
+          stock: stock ? Number(stock) : undefined,
+          stockCounts: stockCounts ? Number(stockCounts) : undefined,
+          vendors: vendors ? vendors.split(",").map((v) => v.trim()) : undefined,
+          images: images?.length ? images : undefined,
+        },
+      });
+
+      res.json(updatedProduct);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to update product" });
     }
   });
 
@@ -88,11 +142,11 @@ export default function (prisma: PrismaClient) {
   router.delete("/:id", async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ error: "Invalid id" });
+      if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
 
       const product = await prisma.product.delete({ where: { id } });
 
-      // Remove uploaded files from disk
+      // Remove uploaded files
       if (product.images?.length) {
         for (const filename of product.images) {
           const filePath = path.join(uploadDir, filename);
@@ -100,7 +154,7 @@ export default function (prisma: PrismaClient) {
         }
       }
 
-      res.status(200).json({ message: "Deleted" });
+      res.json({ message: "Deleted" });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Failed to delete product" });
