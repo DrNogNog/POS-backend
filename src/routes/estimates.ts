@@ -79,6 +79,7 @@ export default function estimateRoutes(prisma: PrismaClient) {
         total: true,
         approved: true,
         billTo: true,
+        invoiced: true,
       },
       orderBy: { createdAt: "desc" },
     });
@@ -120,12 +121,20 @@ export default function estimateRoutes(prisma: PrismaClient) {
 
   // MARK AS INVOICED
   router.patch("/:id/invoiced", async (req, res) => {
-    await prisma.estimate.update({
-      where: { id: Number(req.params.id) },
-      data: { approved: true, invoiced: true },
+  const { id } = req.params;
+
+  try {
+    const updated = await prisma.estimate.update({
+      where: { id: Number(id) },
+      data: { invoiced: true },
     });
-    res.json({ success: true });
-  });
+    res.json(updated); // return updated record
+    console.log("Estimate marked as invoiced:", updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to mark estimate as invoiced" });
+  }
+});
 
   // DELETE
   router.delete("/:id", async (req, res) => {

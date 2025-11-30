@@ -10,10 +10,11 @@ import path from 'path';
 // Import routes
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';
-import saleRoutes from './routes/sales.js';
 
 import estimateRoutes from './routes/estimates.js';
+import invoiceRoutes from "./routes/invoices.js";
 
+ 
 // Load .env (critical for DATABASE_URL)
 dotenv.config();
 
@@ -43,11 +44,10 @@ app.use(express.json()); // Safe to use globally now
 // Serve uploaded images
 const uploadDir = path.join(process.cwd(), "uploads");
 app.use("/uploads", express.static(uploadDir));
-
+app.use("/api/invoices", invoiceRoutes);
 // Routes
 app.use("/api/auth", authRoutes(prisma));                 // Auth
-app.use("/api/products", productRoutes(prisma));          // Products (with multer)
-app.use("/api/sales", saleRoutes(prisma, io));            // Sales + socket
+app.use("/api/products", productRoutes(prisma));          // Products (with multer)          // Sales + socket
 app.use("/api/estimates", estimateRoutes(prisma));
 // Socket.io
 io.on('connection', (socket) => {
