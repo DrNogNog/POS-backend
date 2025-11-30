@@ -1,12 +1,33 @@
 import { Router } from "express";
 import type { Request, Response } from "express";
-import { PrismaClient, Prisma } from "@prisma/client";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { PrismaClient, Prisma } from "@prisma/client";
 
-export default function (prisma: PrismaClient) {
+// -----------------------------
+// Logging helper
+// -----------------------------
+const createLogHelper = (prisma: PrismaClient) => async (
+  productId: number,
+  action: "CREATE OR DUPLICATE" | "UPDATE" | "DELETE",
+  changes?: Record<string, any>
+) => {
+  try {
+    await prisma.productChangeLog.create({
+      data: { productId, action, changes },
+    });
+  } catch (err) {
+    console.error("Failed to log product change:", err);
+  }
+};
+
+// -----------------------------
+// Products router
+// -----------------------------
+export default function productsRoutes(prisma: PrismaClient) {
   const router = Router();
+  const logProductChange = createLogHelper(prisma);
 
   // -----------------------------
   // Ensure uploads folder exists
@@ -22,7 +43,8 @@ export default function (prisma: PrismaClient) {
     filename: (_req, file, cb) => {
       const timestamp = Date.now();
       const ext = path.extname(file.originalname);
-      const name = path.basename(file.originalname, ext)
+      const name = path
+        .basename(file.originalname, ext)
         .replace(/\s+/g, "_")
         .replace(/[^a-zA-Z0-9_-]/g, "");
       cb(null, `${timestamp}-${name}${ext}`);
@@ -36,7 +58,7 @@ export default function (prisma: PrismaClient) {
       if (allowed.includes(file.mimetype)) cb(null, true);
       else cb(new Error("Invalid file type"));
     },
-    limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+    limits: { fileSize: 5 * 1024 * 1024 },
   });
 
   // -----------------------------
@@ -45,21 +67,21 @@ export default function (prisma: PrismaClient) {
   router.get("/", async (req: Request, res: Response) => {
     try {
       const q = String(req.query.q || "").trim();
-
       let where: Prisma.ProductWhereInput | undefined = undefined;
+
       if (q) {
         where = {
           OR: [
-            { name: { contains: q, mode: "insensitive" } },
-            { sku: { contains: q, mode: "insensitive" } },
-            { categories: { contains: q, mode: "insensitive" } },
-            { vendors: { has: q } }, // assuming vendors is string[]
+            { name: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
+            { sku: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
+            { categories: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
+            { vendors: { has: q } },
           ],
         };
       }
 
       const products = await prisma.product.findMany({
-        where,
+        where: { ...where, deletedAt: null },
         take: 100,
       });
 
@@ -71,7 +93,7 @@ export default function (prisma: PrismaClient) {
   });
 
   // -----------------------------
-  // POST /products — create product
+  // POST /products
   // -----------------------------
   router.post("/", upload.array("images"), async (req: Request, res: Response) => {
     try {
@@ -90,10 +112,14 @@ export default function (prisma: PrismaClient) {
           categories: categories || "",
           stock: stock ? Number(stock) : 0,
           stockCounts: stockCounts ? Number(stockCounts) : 0,
-          vendors: vendors ? vendors.split(",").map((v) => v.trim()) : [],
+          vendors: vendors
+            ? (vendors as string).split(",").map((v: string) => v.trim())
+            : [],
           images,
         },
       });
+
+      await logProductChange(product.id, "CREATE OR DUPLICATE", { ...product });
 
       res.json(product);
     } catch (err) {
@@ -103,7 +129,7 @@ export default function (prisma: PrismaClient) {
   });
 
   // -----------------------------
-  // PUT /products/:id — update product
+  // PUT /products/:id
   // -----------------------------
   router.put("/:id", upload.array("images"), async (req: Request, res: Response) => {
     try {
@@ -113,6 +139,8 @@ export default function (prisma: PrismaClient) {
       const { name, price, description, sku, categories, stock, stockCounts, vendors } = req.body;
       const files = req.files as Express.Multer.File[] | undefined;
       const images = files?.map((f) => f.filename);
+
+      const oldProduct = await prisma.product.findUnique({ where: { id } });
 
       const updatedProduct = await prisma.product.update({
         where: { id },
@@ -124,10 +152,23 @@ export default function (prisma: PrismaClient) {
           categories,
           stock: stock ? Number(stock) : undefined,
           stockCounts: stockCounts ? Number(stockCounts) : undefined,
-          vendors: vendors ? vendors.split(",").map((v) => v.trim()) : undefined,
+          vendors: vendors
+            ? (vendors as string).split(",").map((v: string) => v.trim())
+            : [],
           images: images?.length ? images : undefined,
         },
       });
+
+      const changes: Record<string, any> = {};
+      if (oldProduct) {
+        for (const key of Object.keys(updatedProduct)) {
+          if ((updatedProduct as any)[key] !== (oldProduct as any)[key]) {
+            changes[key] = { old: (oldProduct as any)[key], new: (updatedProduct as any)[key] };
+          }
+        }
+      }
+
+      await logProductChange(updatedProduct.id, "UPDATE", changes);
 
       res.json(updatedProduct);
     } catch (err) {
@@ -144,17 +185,14 @@ export default function (prisma: PrismaClient) {
       const id = Number(req.params.id);
       if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
 
-      const product = await prisma.product.delete({ where: { id } });
+      const product = await prisma.product.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
 
-      // Remove uploaded files
-      if (product.images?.length) {
-        for (const filename of product.images) {
-          const filePath = path.join(uploadDir, filename);
-          if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-        }
-      }
+      await logProductChange(product.id, "DELETE", { ...product });
 
-      res.json({ message: "Deleted" });
+      res.json({ message: "Product marked as deleted" });
     } catch (err) {
       console.error(err);
       res.status(500).json({ error: "Failed to delete product" });

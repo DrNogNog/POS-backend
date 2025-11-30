@@ -10,7 +10,7 @@ import path from 'path';
 // Import routes
 import authRoutes from './routes/auth.js';
 import productRoutes from './routes/products.js';
-
+import { productChangeLogRoutes } from './routes/product-change-logs.js';
 import estimateRoutes from './routes/estimates.js';
 import invoiceRoutes from "./routes/invoices.js";
 
@@ -47,6 +47,7 @@ app.use("/uploads", express.static(uploadDir));
 app.use("/api/invoices", invoiceRoutes);
 // Routes
 app.use("/api/auth", authRoutes(prisma));                 // Auth
+app.use("/api/product-change-logs", productChangeLogRoutes(prisma)); // Product Change Logs
 app.use("/api/products", productRoutes(prisma));          // Products (with multer)          // Sales + socket
 app.use("/api/estimates", estimateRoutes(prisma));
 // Socket.io
