@@ -26,7 +26,6 @@ model Product {
   deletedAt   DateTime?            // new field
   images      String[]
   stock       Int
-  stockCounts Int
   vendors     String[]
   categories  String
   logs        ProductChangeLog[]
@@ -75,4 +74,32 @@ model ProductChangeLog {
 
   // Optional: relation to Product
   product   Product  @relation(fields: [productId], references: [id])
+}
+model Order {
+  id          Int      @id @default(autoincrement())
+  productId   String
+  name        String
+  description String?
+  vendors     String?   // comma-separated list
+  count       Int
+  createdAt   DateTime  @default(now())
+  billingPDFs BillingPDF[]
+}
+
+model Archive {
+  id        Int      @id @default(autoincrement())
+  entity    String   // "Product", "Order", etc.
+  entityId  Int      // original ID
+  data      Json     // store the record
+  createdAt DateTime @default(now())
+}
+
+model BillingPDF {
+  id         Int      @id @default(autoincrement())
+  orderId    Int
+  invoiceNo  String   @unique 
+  pdf        Bytes
+  createdAt  DateTime @default(now())
+
+  order      Order    @relation(fields: [orderId], references: [id])
 }

@@ -111,7 +111,6 @@ export default function productsRoutes(prisma: PrismaClient) {
           sku: sku || "",
           categories: categories || "",
           stock: stock ? Number(stock) : 0,
-          stockCounts: stockCounts ? Number(stockCounts) : 0,
           vendors: vendors
             ? (vendors as string).split(",").map((v: string) => v.trim())
             : [],
@@ -151,7 +150,6 @@ export default function productsRoutes(prisma: PrismaClient) {
           sku,
           categories,
           stock: stock ? Number(stock) : undefined,
-          stockCounts: stockCounts ? Number(stockCounts) : undefined,
           vendors: vendors
             ? (vendors as string).split(",").map((v: string) => v.trim())
             : [],
@@ -180,24 +178,75 @@ export default function productsRoutes(prisma: PrismaClient) {
   // -----------------------------
   // DELETE /products/:id
   // -----------------------------
-  router.delete("/:id", async (req: Request, res: Response) => {
-    try {
-      const id = Number(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
+ router.delete("/:id", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
 
-      const product = await prisma.product.update({
-        where: { id },
-        data: { deletedAt: new Date() },
+  const product = await prisma.product.findUnique({ where: { id } });
+  if (!product) return res.status(404).json({ error: "Product not found" });
+
+  await prisma.product.update({
+    where: { id },
+    data: { deletedAt: new Date() }, // soft delete
+  });
+
+  res.json({ message: "Product marked as deleted" });
+});
+
+router.patch("/decrement-stock", async (req: Request, res: Response) => {
+  const { items } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0)
+    return res.status(400).json({ error: "No items provided" });
+
+  try {
+    for (const { sku, qty } of items) {
+      const product = await prisma.product.findFirst({
+        where: { sku },
       });
 
-      await logProductChange(product.id, "DELETE", { ...product });
+      if (!product) {
+        return res.status(404).json({ error: `Product with SKU "${sku}" not found` });
+      }
 
-      res.json({ message: "Product marked as deleted" });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to delete product" });
+      if (product.stock < qty) {
+        return res
+          .status(400)
+          .json({ error: `Insufficient stock for "${product.sku || product.name}"` });
+      }
+
+      await prisma.product.update({
+        where: { id: product.id },
+        data: { stock: product.stock - qty },
+      });
     }
+
+    res.json({ message: "Stock decremented successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to decrement product stock" });
+  }
+});
+
+
+
+
+
+
+// POST /api/products/stock
+router.post("/stock", async (req: Request, res: Response) => {
+  const { productIds } = req.body;
+  if (!Array.isArray(productIds)) return res.status(400).json({ error: "Invalid productIds" });
+
+  const products = await prisma.product.findMany({
+    where: { id: { in: productIds } },
+    select: { id: true, name: true, stock: true },
   });
+
+  res.json(products);
+});
+
+
 
   return router;
 }
