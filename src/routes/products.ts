@@ -228,6 +228,37 @@ router.patch("/decrement-stock", async (req: Request, res: Response) => {
   }
 });
 
+// PATCH /products/increment-stock
+router.patch("/increment-stock", async (req: Request, res: Response) => {
+  const { items } = req.body;
+
+  if (!Array.isArray(items) || items.length === 0)
+    return res.status(400).json({ error: "No items provided" });
+
+  try {
+    for (const { sku, qty } of items) {
+      const product = await prisma.product.findFirst({
+        where: { sku },
+      });
+
+      if (!product) {
+        return res.status(404).json({ error: `Product with SKU "${sku}" not found` });
+      }
+
+      await prisma.product.update({
+        where: { id: product.id },
+        data: { stock: (product.stock || 0) + qty },
+      });
+    }
+
+    res.json({ message: "Stock incremented successfully" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to increment product stock" });
+  }
+});
+
+
 
 
 

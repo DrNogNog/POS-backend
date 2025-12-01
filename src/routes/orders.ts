@@ -68,7 +68,55 @@ router.get("/", async (req: Request, res: Response) => {
     res.status(500).json({ error: "Failed to fetch orders" });
   }
 });
+// Create a new purchase order (placeholder)
+router.post("/create", async (req, res) => {
+  try {
+    const newOrder = await prisma.order.create({
+      data: {
+        productId: "TEMP", // placeholder
+        name: "TEMP",
+        count: 0,
+      },
+    });
+    res.status(200).json({ orderId: newOrder.id });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to create order" });
+  }
+});
 
- 
+// Cancel order only if it exists
+router.delete("/cancel/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  try {
+    const order = await prisma.order.findUnique({ where: { id: Number(id) } });
+    if (!order) {
+      return res.status(200).json({ message: "Order not found, nothing to cancel" });
+    }
+
+    await prisma.order.delete({ where: { id: Number(id) } });
+    res.status(200).json({ message: "Order cancelled" });
+  } catch (err) {
+    console.error("Failed to cancel order:", err);
+    res.status(500).json({ error: "Failed to cancel order", details: (err as Error).message });
+  }
+});
+router.patch("/:id", async (req, res) => {
+  const { id } = req.params;
+  const { vendors, description } = req.body;
+
+  try {
+    const updatedOrder = await prisma.order.update({
+      where: { id: Number(id) },
+      data: { vendors, description },
+    });
+    res.json(updatedOrder);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update order" });
+  }
+});
+
 
 export default router;

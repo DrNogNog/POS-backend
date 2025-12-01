@@ -8,28 +8,57 @@ const prisma = new PrismaClient();
 // Save a PDF
 router.post("/save", async (req: Request, res: Response) => {
   try {
-    const { pdfData, invoiceNo, orderId } = req.body;
+    const { invoiceNo, pdfData, orderId } = req.body;
 
-    if (!pdfData || !invoiceNo || !orderId) {
-      return res.status(400).json({ error: "Missing pdfData, invoiceNo, or orderId" });
+    console.log("Save PDF called with:", { orderId, invoiceNo, pdfDataLength: pdfData?.length });
+
+    if (!orderId) return res.status(400).json({ error: "Missing orderId" });
+
+    // 1️⃣ Check if order exists
+    let order = await prisma.order.findUnique({ where: { id: Number(orderId) } });
+
+    // 2️⃣ If not, create a new order automatically
+    if (!order) {
+      console.log(`Order ID ${orderId} not found — creating a new order`);
+      order = await prisma.order.create({
+        data: {
+          id: Number(orderId), // optional: remove if auto-increment
+          productId: "UNKNOWN",
+          name: "Auto-generated order",
+          count: 1,
+          createdAt: new Date(),
+        },
+      });
     }
 
-    const pdfBuffer = Buffer.from(pdfData, "base64");
+    if (!pdfData) {
+      return res.status(400).json({ error: "Missing PDF data" });
+    }
 
-    const saved = await prisma.billingPDF.create({
+    // 3️⃣ Save the PDF
+    const billingPdf = await prisma.billingPDF.create({
       data: {
         orderId: Number(orderId),
         invoiceNo,
-        pdf: pdfBuffer,
+        pdf: Buffer.from(pdfData, "base64"),
       },
     });
 
-    res.status(200).json({ message: "PDF saved successfully", id: saved.id });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to save PDF" });
+    res.status(201).json({ message: "PDF saved successfully", billingPdf });
+  } catch (err: any) {
+    console.error("Failed to save billing PDF:", err);
+    if (err.code === "P2002") {
+      res.status(400).json({ error: "Invoice number already exists" });
+    } else {
+      res.status(500).json({ error: "Failed to save billing PDF", details: err.message });
+    }
   }
 });
+
+
+
+
+
 
 // Get all PDFs (for mapping in the frontend)
 router.get("/", async (req: Request, res: Response) => {

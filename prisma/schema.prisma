@@ -84,6 +84,7 @@ model Order {
   count       Int
   createdAt   DateTime  @default(now())
   billingPDFs BillingPDF[]
+  status      String @default("pending")
 }
 
 model Archive {
