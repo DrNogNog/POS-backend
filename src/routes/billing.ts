@@ -8,28 +8,32 @@ const prisma = new PrismaClient();
 // Save a PDF
 router.post("/save", async (req: Request, res: Response) => {
   try {
-    const { invoiceNo, pdfData, orderId } = req.body;
+    const { invoiceNo, pdfData, orderId, productId, name, description, vendors, count } = req.body;
+
 
     console.log("Save PDF called with:", { orderId, invoiceNo, pdfDataLength: pdfData?.length });
 
     if (!orderId) return res.status(400).json({ error: "Missing orderId" });
 
     // 1️⃣ Check if order exists
-    let order = await prisma.order.findUnique({ where: { id: Number(orderId) } });
+    let order = await prisma.order.findUnique({
+  where: { id: Number(orderId) },
+        });
 
-    // 2️⃣ If not, create a new order automatically
-    if (!order) {
-      console.log(`Order ID ${orderId} not found — creating a new order`);
-      order = await prisma.order.create({
-        data: {
-          id: Number(orderId), // optional: remove if auto-increment
-          productId: "UNKNOWN",
-          name: "Auto-generated order",
-          count: 1,
-          createdAt: new Date(),
-        },
-      });
-    }
+        if (!order) {
+        // Only create a new order if it truly doesn't exist
+        order = await prisma.order.create({
+            data: {
+            id: Number(orderId), // remove if using auto-increment
+            productId: productId || "UNKNOWN",
+            name: name || "Auto-generated order",
+            description: description || "",
+            vendors: vendors || "",
+            count: count || 1,
+            createdAt: new Date(),
+            },
+        });
+        }
 
     if (!pdfData) {
       return res.status(400).json({ error: "Missing PDF data" });
