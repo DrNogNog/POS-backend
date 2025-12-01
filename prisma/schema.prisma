@@ -1,5 +1,5 @@
 generator client {
-  provider = "prisma-client-js"
+  provider   = "prisma-client-js"
   engineType = "binary"
 }
 
@@ -13,94 +13,94 @@ model User {
   email     String   @unique
   password  String
   name      String?
-  role      String   // "admin" | "cashier"
+  role      String // "admin" | "cashier"
   createdAt DateTime @default(now())
 }
 
 model Product {
-  id          Int                  @id @default(autoincrement())
+  id          Int                @id @default(autoincrement())
   name        String
   description String
   sku         String?
   price       Float
-  deletedAt   DateTime?            // new field
+  deletedAt   DateTime? // optional soft delete
   images      String[]
   stock       Int
   vendors     String[]
   categories  String
   logs        ProductChangeLog[]
+  orders      Order[] // back-relation to Order
 }
-
-
 
 model Estimate {
-  id            Int       @id @default(autoincrement())
-  estimateNo    String    @unique
-  date          DateTime
-  billTo        String
-  shipTo        String
-  subtotal      Float
-  discount      Float
-  total         Float
-  pdfData       Bytes
-  approved      Boolean   @default(false)
-  invoiced      Boolean   @default(false)
-  createdAt     DateTime  @default(now())
-  userId        Int?
+  id         Int      @id @default(autoincrement())
+  estimateNo String   @unique
+  date       DateTime
+  billTo     String
+  shipTo     String
+  subtotal   Float
+  discount   Float
+  total      Float
+  pdfData    Bytes
+  approved   Boolean  @default(false)
+  invoiced   Boolean  @default(false)
+  createdAt  DateTime @default(now())
+  userId     Int?
 
   // Optional / extra fields
-  companyName   String? 
-  companyAddr1  String?
-  companyAddr2  String?
-  phone         String?
-  fax           String?
-  email         String?
-  website       String?
-  items         Json?
+  companyName  String?
+  companyAddr1 String?
+  companyAddr2 String?
+  phone        String?
+  fax          String?
+  email        String?
+  website      String?
+  items        Json?
 }
+
 model Invoice {
-  id         Int      @id @default(autoincrement())
-  invoiceNo  String   @unique
-  pdf        Bytes?   // ← PDF stored here
-  createdAt  DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  invoiceNo String   @unique
+  pdf       Bytes?
+  createdAt DateTime @default(now())
 }
 
 model ProductChangeLog {
   id        Int      @id @default(autoincrement())
   productId Int
-  action    String   // CREATE, UPDATE, DELETE, DUPLICATE
-  changes   Json?    // Store the changed fields
+  action    String // CREATE, UPDATE, DELETE, DUPLICATE
+  changes   Json?
   createdAt DateTime @default(now())
 
-  // Optional: relation to Product
-  product   Product  @relation(fields: [productId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
 }
 model Order {
   id          Int      @id @default(autoincrement())
-  productId   String
+  productId   Int
   name        String
   description String?
-  vendors     String?   // comma-separated list
+  vendors     String?
   count       Int
   createdAt   DateTime  @default(now())
-  billingPDFs BillingPDF[]
   status      String @default("pending")
+  product     Product  @relation(fields: [productId], references: [id])
+  billingPDFs BillingPDF[]
 }
 
 model Archive {
   id        Int      @id @default(autoincrement())
-  entity    String   // "Product", "Order", etc.
-  entityId  Int      // original ID
-  data      Json     // store the record
+  entity    String // "Product", "Order", etc.
+  entityId  Int
+  data      Json
   createdAt DateTime @default(now())
 }
 
 model BillingPDF {
-  id         Int      @id @default(autoincrement())
-  orderId    Int
-  invoiceNo  String   @unique 
-  pdf        Bytes
-  createdAt  DateTime @default(now())
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  invoiceNo String   @unique
+  pdf       Bytes
+  createdAt DateTime @default(now())
 
-  order      Order    @relation(fields: [orderId], references: [id])
+  order Order @relation(fields: [orderId], references: [id])
 }

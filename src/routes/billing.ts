@@ -5,41 +5,50 @@ import { PrismaClient } from "@prisma/client";
 const router = express.Router();
 const prisma = new PrismaClient();
 
-// Save a PDF
+// -------------------- SAVE PDF AND UPDATE STOCK --------------------
 router.post("/save", async (req: Request, res: Response) => {
   try {
-    const { invoiceNo, pdfData, orderId, productId, name, description, vendors, count } = req.body;
+    const {
+      invoiceNo,
+      pdfData,
+      orderId,
+      productId,
+      name,
+      description,
+      vendors,
+      count,
+      items, // send items array from frontend
+    } = req.body;
 
-
-    console.log("Save PDF called with:", { orderId, invoiceNo, pdfDataLength: pdfData?.length });
+    console.log("Save PDF called with:", {
+      orderId,
+      invoiceNo,
+      pdfDataLength: pdfData?.length,
+      itemsLength: items?.length,
+    });
 
     if (!orderId) return res.status(400).json({ error: "Missing orderId" });
+    if (!pdfData) return res.status(400).json({ error: "Missing PDF data" });
 
     // 1️⃣ Check if order exists
-    let order = await prisma.order.findUnique({
-  where: { id: Number(orderId) },
-        });
+    let order = await prisma.order.findUnique({ where: { id: Number(orderId) } });
 
-        if (!order) {
-        // Only create a new order if it truly doesn't exist
-        order = await prisma.order.create({
-            data: {
-            id: Number(orderId), // remove if using auto-increment
-            productId: productId || "UNKNOWN",
-            name: name || "Auto-generated order",
-            description: description || "",
-            vendors: vendors || "",
-            count: count || 1,
-            createdAt: new Date(),
-            },
-        });
-        }
-
-    if (!pdfData) {
-      return res.status(400).json({ error: "Missing PDF data" });
+    if (!order) {
+      // Only create a new order if it truly doesn't exist
+      order = await prisma.order.create({
+        data: {
+          id: Number(orderId), // remove if using auto-increment
+          productId: productId || "UNKNOWN",
+          name: name || "Auto-generated order",
+          description: description || "",
+          vendors: vendors || "",
+          count: count || 1,
+          createdAt: new Date(),
+        },
+      });
     }
 
-    // 3️⃣ Save the PDF
+    // 2️⃣ Save the PDF
     const billingPdf = await prisma.billingPDF.create({
       data: {
         orderId: Number(orderId),
@@ -47,6 +56,25 @@ router.post("/save", async (req: Request, res: Response) => {
         pdf: Buffer.from(pdfData, "base64"),
       },
     });
+
+    // 3️⃣ Update Product stock based on first item
+    if (items && items.length > 0) {
+      const firstItem = items[0];
+      const sku = firstItem.item; // assuming item field is SKU
+      const qtyToAdd = Number(firstItem.qty) || 0;
+
+      if (sku && qtyToAdd > 0) {
+        try {
+          const updated = await prisma.product.updateMany({
+            where: { sku },
+            data: { stock: { increment: qtyToAdd } },
+          });
+          console.log(`Updated stock for SKU: ${sku}`, updated);
+        } catch (err) {
+          console.error("Failed to update product stock:", err);
+        }
+      }
+    }
 
     res.status(201).json({ message: "PDF saved successfully", billingPdf });
   } catch (err: any) {
@@ -58,7 +86,6 @@ router.post("/save", async (req: Request, res: Response) => {
     }
   }
 });
-
 
 
 
