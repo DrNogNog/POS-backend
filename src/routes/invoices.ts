@@ -6,7 +6,7 @@ const prisma = new PrismaClient();
 
 router.post("/", async (req, res) => {
   try {
-    const { invoiceNo, pdf } = req.body;
+    const { invoiceNo, total, pdf } = req.body;
 
     if (!pdf || !invoiceNo) {
       return res.status(400).json({ error: "Missing invoiceNo or PDF" });
@@ -30,7 +30,9 @@ router.post("/", async (req, res) => {
     const saved = await prisma.invoice.create({
       data: {
         invoiceNo,
+        total,
         pdf: pdfBuffer,
+        status: "PENDING",
       },
     });
 
@@ -76,6 +78,21 @@ router.delete("/:id", async (req, res) => {
     res.status(500).json({ error: "Failed to delete invoice" });
   }
 });
+router.put("/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body;
 
+    const updated = await prisma.invoice.update({
+      where: { id: Number(id) }, // or String(id) depending on schema
+      data: { status },
+    });
+
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update invoice status" });
+  }
+});
 
 export default router;

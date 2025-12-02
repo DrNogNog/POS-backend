@@ -61,8 +61,10 @@ model Estimate {
 model Invoice {
   id        Int      @id @default(autoincrement())
   invoiceNo String   @unique
+  total     Decimal  @db.Decimal(10, 2)
   pdf       Bytes?
   createdAt DateTime @default(now())
+  status    String
 }
 
 model ProductChangeLog {
