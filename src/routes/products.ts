@@ -92,6 +92,35 @@ export default function productsRoutes(prisma: PrismaClient) {
     }
   });
 
+// GET /api/products/needToOrder → returns only products with needToOrder > 0
+router.get("/needToOrder", async (req: Request, res: Response) => {
+  try {
+    const products = await prisma.product.findMany({
+      where: {
+        needToOrder: { gt: 0 },
+        deletedAt: null,
+      },
+      select: {
+        id: true,
+        name: true,
+        style: true,
+        sku: true,
+        inputcost: true,
+        price: true,
+        stock: true,
+        vendors: true,
+        images: true,
+        needToOrder: true,
+      },
+      orderBy: { needToOrder: "desc" },
+    });
+
+    res.json(products);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to fetch needed products" });
+  }
+});
   // -----------------------------
   // POST /products
   // -----------------------------
@@ -105,16 +134,16 @@ export default function productsRoutes(prisma: PrismaClient) {
 
       const product = await prisma.product.create({
         data: {
-          name,
-          price: parseFloat(price),
-          description: description || "",
-          sku: sku || "",
-          categories: categories || "",
-          stock: stock ? Number(stock) : 0,
-          vendors: vendors
-            ? (vendors as string).split(",").map((v: string) => v.trim())
-            : [],
-          images,
+          name: req.body.name || "",
+          style: req.body.style || "", // use the value from frontend
+          price: Number(req.body.price) || 0,
+          inputcost: Number(req.body.inputcost) || 0,
+          sku: req.body.sku || "",
+          description: req.body.description || "",
+          categories: req.body.categories || "",
+          stock: Number(req.body.stock) || 0,
+          vendors: req.body.vendors?.split(",") || [],
+          images: req.body.images || [],
         },
       });
 
@@ -257,7 +286,39 @@ router.patch("/increment-stock", async (req: Request, res: Response) => {
     res.status(500).json({ error: "Failed to increment product stock" });
   }
 });
+// routes/products.ts
+router.patch("/increment-stock-by-style-sku", async (req: Request, res: Response) => {
+  const { items } = req.body;
 
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ error: "No items provided" });
+  }
+
+  try {
+    for (const { style, sku, qty } of items) {
+      const product = await prisma.product.findFirst({
+        where: {
+          style: style.trim(),
+          sku: sku.trim(),
+        },
+      });
+
+      if (!product) {
+        return res.status(404).json({ error: `Product not found: ${style} / ${sku}` });
+      }
+
+      await prisma.product.update({
+        where: { id: product.id },
+        data: { stock: (product.stock || 0) + qty },
+      });
+    }
+
+    res.json({ message: "Stock updated by style + SKU" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update stock" });
+  }
+});
 
 
 
@@ -277,7 +338,53 @@ router.post("/stock", async (req: Request, res: Response) => {
   res.json(products);
 });
 
+// PATCH /api/products/needToOrder/:id
+router.patch("/needToOrder/:id", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
 
+  if (!id || isNaN(id)) {
+    return res.status(400).json({ error: "Invalid product ID" });
+  }
+
+  // THIS LINE WAS WRONG BEFORE — you had "count"
+  const { needToOrder } = req.body;   // ← MUST BE "needToOrder", not "count"
+
+  // Validate the value
+  if (
+    typeof needToOrder !== "number" ||
+    needToOrder < 0 ||
+    !Number.isInteger(needToOrder)
+  ) {
+    return res.status(400).json({ error: "needToOrder must be a positive integer" });
+  }
+
+  try {
+    const updated = await prisma.product.update({
+      where: { id },
+      data: { needToOrder },
+      select: { id: true, name: true, needToOrder: true },
+    });
+
+    return res.json({ success: true, product: updated });
+  } catch (error: any) {
+    console.error("PATCH failed:", error);
+
+    if (error.code === "P2025") {
+      return res.status(404).json({ error: "Product not found" });
+    }
+
+    return res.status(500).json({ error: "Database error" });
+  }
+});
+router.patch("/billing/:id", async (req: Request, res: Response) => {
+  const id = Number(req.params.id);
+  const { billing } = req.body;
+  await prisma.product.update({
+    where: { id },
+    data: { billing },
+  });
+  return res.json({ success: true });
+  });
 
   return router;
 }

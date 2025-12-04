@@ -20,8 +20,10 @@ model User {
 model Product {
   id          Int                @id @default(autoincrement())
   name        String
+  style       String
   description String
   sku         String?
+  inputcost   Decimal           @db.Decimal(10, 2)
   price       Float
   deletedAt   DateTime? // optional soft delete
   images      String[]
@@ -29,7 +31,17 @@ model Product {
   vendors     String[]
   categories  String
   logs        ProductChangeLog[]
-  orders      Order[] // back-relation to Order
+  needToOrder Int  @default(0)
+  billing     Boolean?
+}
+
+model BillingPDF {
+  id        Int      @id @default(autoincrement())
+  orderId   Int
+  invoiceNo String   @unique
+  cost      Int
+  pdf       Bytes
+  createdAt DateTime @default(now())
 }
 
 model Estimate {
@@ -76,18 +88,8 @@ model ProductChangeLog {
 
   product Product @relation(fields: [productId], references: [id])
 }
-model Order {
-  id          Int      @id @default(autoincrement())
-  productId   Int
-  name        String
-  description String?
-  vendors     String?
-  count       Int
-  createdAt   DateTime  @default(now())
-  status      String @default("pending")
-  product     Product  @relation(fields: [productId], references: [id])
-  billingPDFs BillingPDF[]
-}
+
+
 
 model Archive {
   id        Int      @id @default(autoincrement())
@@ -97,12 +99,4 @@ model Archive {
   createdAt DateTime @default(now())
 }
 
-model BillingPDF {
-  id        Int      @id @default(autoincrement())
-  orderId   Int
-  invoiceNo String   @unique
-  pdf       Bytes
-  createdAt DateTime @default(now())
 
-  order Order @relation(fields: [orderId], references: [id])
-}

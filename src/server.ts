@@ -13,7 +13,6 @@ import productRoutes from './routes/products.js';
 import { productChangeLogRoutes } from './routes/product-change-logs.js';
 import estimateRoutes from './routes/estimates.js';
 import invoiceRoutes from "./routes/invoices.js";
-import orderRoutes from './routes/orders.js';
 import archiveRouter from "./routes/archives.js";
 import billingRouter from "./routes/billing.js";
 // Load .env (critical for DATABASE_URL)
@@ -51,7 +50,6 @@ app.use("/api/auth", authRoutes(prisma));                 // Auth
 app.use("/api/product-change-logs", productChangeLogRoutes(prisma)); // Product Change Logs
 app.use("/api/products", productRoutes(prisma));          // Products (with multer)          // Sales + socket
 app.use("/api/estimates", estimateRoutes(prisma));
-app.use("/api/orders", orderRoutes);
 app.use("/api/archives", archiveRouter);
 app.use("/api/billing", billingRouter);
 // Socket.io
