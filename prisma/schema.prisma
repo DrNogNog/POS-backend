@@ -33,6 +33,7 @@ model Product {
   logs        ProductChangeLog[]
   needToOrder Int  @default(0)
   billing     Boolean?
+  createdAt DateTime @default(now())
 }
 
 model BillingPDF {
