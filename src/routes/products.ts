@@ -6,7 +6,7 @@ import fs from "fs";
 import { PrismaClient, Prisma } from "@prisma/client";
 
 // -----------------------------
-// Logging helper (keeps your original signature)
+// Logging helper
 // -----------------------------
 const createLogHelper = (prisma: PrismaClient) => async (
   productId: number,
@@ -47,15 +47,11 @@ export default function productsRoutes(prisma: PrismaClient) {
   const router = Router();
   const logProductChange = createLogHelper(prisma);
 
-  // -----------------------------
   // Ensure uploads folder exists
-  // -----------------------------
   const uploadDir = path.join(process.cwd(), "uploads");
   if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
 
-  // -----------------------------
   // Multer storage config
-  // -----------------------------
   const storage = multer.diskStorage({
     destination: (_req, _file, cb) => cb(null, uploadDir),
     filename: (_req, file, cb) => {
@@ -79,9 +75,7 @@ export default function productsRoutes(prisma: PrismaClient) {
     limits: { fileSize: 5 * 1024 * 1024 },
   });
 
-  // -----------------------------
   // GET /products?q=search
-  // -----------------------------
   router.get("/", async (req: Request, res: Response) => {
     try {
       const q = String(req.query.q || "").trim();
@@ -91,8 +85,6 @@ export default function productsRoutes(prisma: PrismaClient) {
         where = {
           OR: [
             { name: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
-            { sku: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
-            { categories: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
             { vendors: { has: q } },
           ],
         };
@@ -101,9 +93,7 @@ export default function productsRoutes(prisma: PrismaClient) {
       const products = await prisma.product.findMany({
         where: { ...where, deletedAt: null },
         take: 100,
-         orderBy: [
-          { createdAt: "desc" },
-        ],
+        orderBy: [{ createdAt: "desc" }],
       });
 
       res.json(products);
@@ -113,21 +103,16 @@ export default function productsRoutes(prisma: PrismaClient) {
     }
   });
 
-  // GET /api/products/needToOrder → returns only products with needToOrder > 0
+  // GET /products/needToOrder
   router.get("/needToOrder", async (req: Request, res: Response) => {
     try {
       const products = await prisma.product.findMany({
-        where: {
-          needToOrder: { gt: 0 },
-          deletedAt: null,
-        },
+        where: { needToOrder: { gt: 0 }, deletedAt: null },
         select: {
           id: true,
           name: true,
-          style: true,
-          sku: true,
+          description: true,
           inputcost: true,
-          price: true,
           stock: true,
           vendors: true,
           images: true,
@@ -143,28 +128,22 @@ export default function productsRoutes(prisma: PrismaClient) {
     }
   });
 
-  // -----------------------------
   // POST /products
-  // -----------------------------
   router.post("/", upload.array("images"), async (req: Request, res: Response) => {
     try {
-      const { name, price } = req.body;
-      if (!name || !price) return res.status(400).json({ error: "Name and price are required" });
+      const { name } = req.body;
+      if (!name) return res.status(400).json({ error: "Name is required" });
 
       const files = req.files as Express.Multer.File[] | undefined;
       const images = files?.map((f) => f.filename) || [];
       const product = await prisma.product.create({
         data: {
           name: String(req.body.name || ""),
-          style: String(req.body.style || ""),
-          price: toNumberSafe(req.body.price, 0),
           inputcost: toNumberSafe(req.body.inputcost, 0),
-          sku: String(req.body.sku || ""),
           description: String(req.body.description || ""),
-          categories: String(req.body.categories || ""),
           stock: toNumberSafe(req.body.stock, 0),
           vendors: normalizeVendors(req.body.vendors),
-          images, // use multer filenames
+          images,
           needToOrder: toNumberSafe(req.body.needToOrder ?? 0, 0),
         },
       });
@@ -177,48 +156,66 @@ export default function productsRoutes(prisma: PrismaClient) {
     }
   });
 
-  // -----------------------------
+  // POST /products/duplicate
+  router.post("/duplicate", async (req: Request, res: Response) => {
+    try {
+      const data = req.body;
+      const product = await prisma.product.create({
+        data: {
+          name: String(data.name || ""),
+          inputcost: toNumberSafe(data.inputcost, 0),
+          description: String(data.description || ""),
+          stock: toNumberSafe(data.stock, 0),
+          vendors: normalizeVendors(data.vendors),
+          images: data.images || [],
+          needToOrder: 0,
+        },
+      });
+
+      await logProductChange(product.id, "CREATE OR DUPLICATE", { ...product });
+      res.json(product);
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: "Failed to duplicate product" });
+    }
+  });
+
   // PUT /products/:id
-  // -----------------------------
+  function normalizeArrayField(value: any): string[] | undefined {
+    if (!value) return undefined;
+    if (Array.isArray(value)) return value;
+    return value.split(",").map((s: string) => s.trim());
+  }
+
   router.put("/:id", upload.array("images"), async (req: Request, res: Response) => {
     try {
       const id = Number(req.params.id);
       if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
 
       const files = req.files as Express.Multer.File[] | undefined;
-      const newImages = files?.map((f) => f.filename) || [];
+      const uploadedImages = files?.map((f) => f.filename) || [];
 
       const oldProduct = await prisma.product.findUnique({ where: { id } });
       if (!oldProduct) return res.status(404).json({ error: "Product not found" });
 
-      // Prepare vendors array (if provided)
-      const vendors = req.body.vendors ? normalizeVendors(req.body.vendors) : undefined;
+      const finalImages =
+        uploadedImages.length > 0 ? [...(oldProduct.images || []), ...uploadedImages] : undefined;
 
-      // Determine final images: if new uploads provided, append to existing
-      const finalImages = newImages.length > 0 ? [...(oldProduct.images || []), ...newImages] : undefined;
-
-      const data: Prisma.ProductUpdateInput = {
+      let data: Prisma.ProductUpdateInput = {
         name: req.body.name ?? undefined,
-        price: req.body.price !== undefined ? toNumberSafe(req.body.price) : undefined,
-        style: req.body.style ?? undefined,
-        inputcost: req.body.inputcost !== undefined ? toNumberSafe(req.body.inputcost) : undefined,
-        sku: req.body.sku ?? undefined,
         description: req.body.description ?? undefined,
-        categories: req.body.categories ?? undefined,
+        inputcost: req.body.inputcost !== undefined ? toNumberSafe(req.body.inputcost) : undefined,
         stock: req.body.stock !== undefined ? toNumberSafe(req.body.stock) : undefined,
-        vendors: vendors !== undefined ? vendors : undefined,
-        images: finalImages !== undefined ? finalImages : undefined,
+        vendors: normalizeArrayField(req.body.vendors),
+        images: finalImages,
       };
 
-      // Remove undefined keys from data so prisma doesn't overwrite with null
-      Object.keys(data).forEach((k) => (data as any)[k] === undefined && delete (data as any)[k]);
-
-      const updatedProduct = await prisma.product.update({
-        where: { id },
-        data,
+      Object.keys(data).forEach((k) => {
+        if ((data as any)[k] === undefined) delete (data as any)[k];
       });
 
-      // compute changes
+      const updatedProduct = await prisma.product.update({ where: { id }, data });
+
       const changes: Record<string, any> = {};
       for (const key of Object.keys(updatedProduct)) {
         if ((updatedProduct as any)[key] !== (oldProduct as any)[key]) {
@@ -226,12 +223,11 @@ export default function productsRoutes(prisma: PrismaClient) {
         }
       }
 
-      await logProductChange(updatedProduct.id, "UPDATE", changes);
-
-      res.json(updatedProduct);
+      await logProductChange(id, "UPDATE", changes);
+      return res.json(updatedProduct);
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to update product" });
+      console.error("Update Error:", err);
+      return res.status(500).json({ error: "Failed to update product" });
     }
   });
 
@@ -263,40 +259,52 @@ export default function productsRoutes(prisma: PrismaClient) {
   // -----------------------------
   // PATCH /products/decrement-stock
   // -----------------------------
-  router.patch("/decrement-stock", async (req: Request, res: Response) => {
-    const { items } = req.body;
+router.patch("/decrement-stock", async (req: Request, res: Response) => {
+  const items = req.body.items;
+  if (!Array.isArray(items) || items.length === 0)
+    return res.status(400).json({ error: "No items provided" });
 
-    if (!Array.isArray(items) || items.length === 0)
-      return res.status(400).json({ error: "No items provided" });
+  try {
+    const results = [];
+    for (const { name, quantity } of items) {
+      if (!name || !quantity) continue;
 
-    try {
-      for (const { sku, qty } of items) {
-        const product = await prisma.product.findFirst({
-          where: { sku },
-        });
+      const product = await prisma.product.findFirst({
+        where: { 
+          name: name.trim(),    // ← EXACT MATCH + TRIM (this works on SQLite)
+          deletedAt: null 
+        },
+      });
 
-        if (!product) {
-          return res.status(404).json({ error: `Product with SKU "${sku}" not found` });
-        }
+      if (!product) {
+        console.log(`Product not found: "${name}"`);
+        continue;
+      }
 
-        if ((product.stock || 0) < qty) {
-          return res
-            .status(400)
-            .json({ error: `Insufficient stock for "${product.sku || product.name}"` });
-        }
-
-        await prisma.product.update({
-          where: { id: product.id },
-          data: { stock: (product.stock || 0) - qty },
+      if (product.stock < quantity) {
+        return res.status(400).json({ 
+          error: `Not enough stock for ${name}. Available: ${product.stock}, Requested: ${quantity}` 
         });
       }
 
-      res.json({ message: "Stock decremented successfully" });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to decrement product stock" });
+      const updated = await prisma.product.update({
+        where: { id: product.id },
+        data: { stock: { decrement: quantity } },
+      });
+
+      results.push(updated);
     }
-  });
+
+    if (results.length === 0) {
+      return res.status(400).json({ error: "No products were updated (not found or no stock)" });
+    }
+
+    res.json({ success: true, updated: results });
+  } catch (err: any) {
+    console.error("Decrement stock error:", err);
+    res.status(500).json({ error: err.message || "Stock update failed" });
+  }
+});
 
   // -----------------------------
   // PATCH /products/increment-stock
@@ -304,22 +312,27 @@ export default function productsRoutes(prisma: PrismaClient) {
   router.patch("/increment-stock", async (req: Request, res: Response) => {
     const { items } = req.body;
 
-    if (!Array.isArray(items) || items.length === 0)
+    if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ error: "No items provided" });
+    }
 
     try {
-      for (const { sku, qty } of items) {
+      for (const { item, qty } of items) {
+        if (!item) {
+          return res.status(400).json({ error: "Missing product name (item)" });
+        }
+
         const product = await prisma.product.findFirst({
-          where: { sku },
+          where: { name: String(item).trim() },
         });
 
         if (!product) {
-          return res.status(404).json({ error: `Product with SKU "${sku}" not found` });
+          return res.status(404).json({ error: `Product not found: ${item}` });
         }
 
         await prisma.product.update({
           where: { id: product.id },
-          data: { stock: (product.stock || 0) + qty },
+          data: { stock: (product.stock || 0) + Number(qty || 0) },
         });
       }
 
@@ -330,45 +343,6 @@ export default function productsRoutes(prisma: PrismaClient) {
     }
   });
 
-  // -----------------------------
-  // PATCH /products/increment-stock-by-style-sku
-  // -----------------------------
-  router.patch("/increment-stock-by-style-sku", async (req: Request, res: Response) => {
-    const { items } = req.body;
-
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "No items provided" });
-    }
-
-    try {
-      for (const { style, sku, qty } of items) {
-        if (!style || !sku) {
-          return res.status(400).json({ error: "Missing style or sku in an item" });
-        }
-
-        const product = await prisma.product.findFirst({
-          where: {
-            style: String(style).trim(),
-            sku: String(sku).trim(),
-          },
-        });
-
-        if (!product) {
-          return res.status(404).json({ error: `Product not found: ${style} / ${sku}` });
-        }
-
-        await prisma.product.update({
-          where: { id: product.id },
-          data: { stock: (product.stock || 0) + Number(qty || 0) },
-        });
-      }
-
-      res.json({ message: "Stock updated by style + SKU" });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to update stock" });
-    }
-  });
 
   // -----------------------------
   // POST /api/products/stock
@@ -428,6 +402,35 @@ export default function productsRoutes(prisma: PrismaClient) {
       return res.status(500).json({ error: "Database error" });
     }
   });
+  router.patch("/updateImage", upload.single("newImage"), async (req, res) => {
+  const { oldFilename } = req.body;
+  const file = req.file;
+
+  if (!oldFilename || !file) return res.status(400).json({ error: "Old filename or new image missing" });
+
+  try {
+    // Find product containing this image
+    const product = await prisma.product.findFirst({ where: { images: { has: oldFilename } } });
+    if (!product) return res.status(404).json({ error: "Product/image not found" });
+
+    // Replace old filename in images array
+    const updatedImages = product.images.map((img) => (img === oldFilename ? file.filename : img));
+
+    await prisma.product.update({
+      where: { id: product.id },
+      data: { images: updatedImages },
+    });
+
+    // Optionally delete old image from disk
+    const oldPath = path.join(process.cwd(), "uploads", oldFilename);
+    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
+
+    res.json({ src: `http://localhost:4000/uploads/${file.filename}` });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to update image" });
+  }
+});
 
   // -----------------------------
   // PATCH /products/billing/:id
@@ -449,5 +452,5 @@ export default function productsRoutes(prisma: PrismaClient) {
     }
   });
 
-  return router;
+return router;
 }

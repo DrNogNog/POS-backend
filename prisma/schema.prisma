@@ -20,16 +20,12 @@ model User {
 model Product {
   id          Int                @id @default(autoincrement())
   name        String
-  style       String
   description String
-  sku         String?
   inputcost   Decimal           @db.Decimal(10, 2)
-  price       Float
   deletedAt   DateTime? // optional soft delete
   images      String[]
   stock       Int
   vendors     String[]
-  categories  String
   logs        ProductChangeLog[]
   needToOrder Int  @default(0)
   billing     Boolean?

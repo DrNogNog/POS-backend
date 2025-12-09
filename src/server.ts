@@ -15,9 +15,12 @@ import estimateRoutes from './routes/estimates.js';
 import invoiceRoutes from "./routes/invoices.js";
 import archiveRouter from "./routes/archives.js";
 import billingRouter from "./routes/billing.js";
+import session from "express-session";
 // Load .env (critical for DATABASE_URL)
 dotenv.config();
 
+
+// Also handle preflight
 // Create PrismaClient with correct config for Prisma 7+
 const prisma = new PrismaClient({
   datasources: {
@@ -38,7 +41,28 @@ const server = http.createServer(app);
 const io = new SocketIOServer(server, { cors: { origin: true } });
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: "http://localhost:3000",        // Your Next.js app
+    credentials: true,                      // This is critical!
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+
+app.use(
+  session({
+    secret: process.env.SESSION_SECRET || "supersecretkey",
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+      httpOnly: true,
+      secure: false,        // MUST be false on localhost (no HTTPS)
+      sameSite: "lax",      // "lax" works perfectly on localhost
+      maxAge: 24 * 60 * 60 * 1000,
+    },
+  })
+);
 app.use(express.json()); // Safe to use globally now
 
 // Serve uploaded images
