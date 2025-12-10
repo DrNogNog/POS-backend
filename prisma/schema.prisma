@@ -33,12 +33,16 @@ model Product {
 }
 
 model BillingPDF {
-  id        Int      @id @default(autoincrement())
-  orderId   Int
-  invoiceNo String   @unique
-  cost      Int
-  pdf       Bytes
-  createdAt DateTime @default(now())
+  id          Int      @id @default(autoincrement())
+  orderId     Int
+  invoiceNo   String   @unique
+  cost        Decimal  @db.Decimal(10, 2)  // Total invoice amount
+  amountPaid  Decimal  @default(0) @db.Decimal(10, 2)  // Amount already paid
+  paidAt      DateTime?                   // Null until fully paid
+  pdf         Bytes
+  createdAt   DateTime @default(now())
+
+  @@map("billing_pdfs")
 }
 
 model Estimate {
@@ -68,12 +72,15 @@ model Estimate {
 }
 
 model Invoice {
-  id        Int      @id @default(autoincrement())
-  invoiceNo String   @unique
-  total     Decimal  @db.Decimal(10, 2)
-  pdf       Bytes?
-  createdAt DateTime @default(now())
-  status    String
+  id          Int       @id @default(autoincrement())
+  invoiceNo   String    @unique
+  total       Decimal   @db.Decimal(10, 2)
+  paidAmount  Decimal   @default(0) @db.Decimal(10, 2)    // ← ADD THIS
+  dueDate     DateTime                                          // ← ADD THIS (invoice due date)
+  pdf         Bytes?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  status      String    @default("PENDING")               // PENDING | PAID | PARTIALLY_PAID | OVERDUE
 }
 
 model ProductChangeLog {

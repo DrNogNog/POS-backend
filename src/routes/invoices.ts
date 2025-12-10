@@ -31,6 +31,8 @@ router.post("/", async (req, res) => {
       data: {
         invoiceNo,
         total,
+        paidAmount: 0,                    // ← explicitly set
+        dueDate: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000), // 30 days from now
         pdf: pdfBuffer,
         status: "PENDING",
       },
@@ -42,17 +44,30 @@ router.post("/", async (req, res) => {
     res.status(500).json({ error: "Failed to save PDF" });
   }
 });
+// routes/invoices.ts
 router.get("/", async (req, res) => {
   try {
     const invoices = await prisma.invoice.findMany({
       orderBy: { createdAt: "desc" },
     });
-    res.json(invoices);
-  } catch (err) {
-    console.error(err);
+
+    const safeInvoices = invoices.map(inv => ({
+      id: inv.id,
+      invoiceNo: inv.invoiceNo,
+      total: inv.total.toString(),
+      paidAmount: inv.paidAmount.toString(),
+      dueDate: inv.dueDate.toISOString(),
+      createdAt: inv.createdAt.toISOString(),
+      status: inv.status,
+    }));
+
+    res.json(safeInvoices);
+  } catch (err: any) {
+    console.error("GET invoices error:", err);
     res.status(500).json({ error: "Failed to fetch invoices" });
   }
 });
+
 router.get("/:id", async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -81,17 +96,53 @@ router.delete("/:id", async (req, res) => {
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body;
+    const { dueDate, status } = req.body;
+
+    const updateData: any = {};
+    if (dueDate) updateData.dueDate = new Date(dueDate);
+    if (status) updateData.status = status;
 
     const updated = await prisma.invoice.update({
-      where: { id: Number(id) }, // or String(id) depending on schema
-      data: { status },
+      where: { id: Number(id) },
+      data: updateData,
     });
 
     res.json(updated);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Failed to update invoice status" });
+    res.status(500).json({ error: "Failed to update invoice" });
+  }
+});
+// routes/invoices.ts
+router.post("/:id/pay", async (req, res) => {
+  try {
+    const invoiceId = Number(req.params.id);
+    const { amount } = req.body;
+    const paymentAmount = parseFloat(amount);
+
+    if (isNaN(paymentAmount) || paymentAmount <= 0) {
+      return res.status(400).json({ error: "Invalid amount" });
+    }
+
+    const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+    if (!invoice) return res.status(404).json({ error: "Invoice not found" });
+
+    const newPaid = invoice.paidAmount.toNumber() + paymentAmount;
+    const total = invoice.total.toNumber();
+    const isPaid = newPaid >= total;
+
+    await prisma.invoice.update({
+      where: { id: invoiceId },
+      data: {
+        paidAmount: newPaid > total ? total : newPaid,
+        status: isPaid ? "PAID" : newPaid > 0 ? "PARTIALLY_PAID" : "PENDING",
+      },
+    });
+
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Payment failed" });
   }
 });
 
