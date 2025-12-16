@@ -77,31 +77,47 @@ export default function productsRoutes(prisma: PrismaClient) {
 
   // GET /products?q=search
   router.get("/", async (req: Request, res: Response) => {
-    try {
-      const q = String(req.query.q || "").trim();
-      let where: Prisma.ProductWhereInput | undefined = undefined;
+  try {
+    const q = String(req.query.q || "").trim();
 
-      if (q) {
-        where = {
-          OR: [
-            { name: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
-            { vendors: { has: q } },
-          ],
-        };
-      }
+    // Parse page & limit from query params
+    const page = parseInt(String(req.query.page || "1"), 10);
+    const limit = parseInt(String(req.query.limit || "100"), 10);
+    const skip = (page - 1) * limit;
 
-      const products = await prisma.product.findMany({
-        where: { ...where, deletedAt: null },
-        take: 100,
-        orderBy: [{ createdAt: "desc" }],
-      });
+    let where: Prisma.ProductWhereInput | undefined = undefined;
 
-      res.json(products);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to fetch products" });
+    if (q) {
+      where = {
+        OR: [
+          { name: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
+          { vendors: { has: q } },
+        ],
+      };
     }
-  });
+
+    // Fetch products with pagination
+    const [products, totalCount] = await Promise.all([
+      prisma.product.findMany({
+        where: { ...where, deletedAt: null },
+        take: limit,
+        skip,
+        orderBy: [{ createdAt: "desc" }],
+      }),
+      prisma.product.count({ where: { ...where, deletedAt: null } }),
+    ]);
+
+    res.json({
+      products,
+      total: totalCount,
+      page,
+      totalPages: Math.ceil(totalCount / limit),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Failed to fetch products" });
+  }
+});
 
   // GET /products/needToOrder
   router.get("/needToOrder", async (req: Request, res: Response) => {
