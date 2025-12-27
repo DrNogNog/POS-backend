@@ -76,48 +76,43 @@ export default function productsRoutes(prisma: PrismaClient) {
   });
 
   // GET /products?q=search
-  router.get("/", async (req: Request, res: Response) => {
+router.get("/", async (req: Request, res: Response) => {
   try {
-    const q = String(req.query.q || "").trim();
+    const page = Number(req.query.page || 1);
+    const limit = Number(req.query.limit || 100);
+    const search = String(req.query.search || "").trim();
 
-    // Parse page & limit from query params
-    const page = parseInt(String(req.query.page || "1"), 10);
-    const limit = parseInt(String(req.query.limit || "100"), 10);
     const skip = (page - 1) * limit;
 
-    let where: Prisma.ProductWhereInput | undefined = undefined;
-
-    if (q) {
-      where = {
+    const where: Prisma.ProductWhereInput = {
+      deletedAt: null,
+      ...(search && {
         OR: [
-          { name: { contains: q, mode: "insensitive" } as Prisma.StringFilter },
-          { vendors: { has: q } },
+          { name: { contains: search, mode: "insensitive" } },
+          { description: { contains: search, mode: "insensitive" } },
+          { vendors: { hasSome: [search] } },
         ],
-      };
-    }
-
-    // Fetch products with pagination
-    const [products, totalCount] = await Promise.all([
-      prisma.product.findMany({
-        where: { ...where, deletedAt: null },
-        take: limit,
-        skip,
-        orderBy: [{ createdAt: "desc" }],
       }),
-      prisma.product.count({ where: { ...where, deletedAt: null } }),
+    };
+
+    const [products, total] = await Promise.all([
+      prisma.product.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { name: "asc" },
+      }),
+      prisma.product.count({ where }),
     ]);
 
-    res.json({
-      products,
-      total: totalCount,
-      page,
-      totalPages: Math.ceil(totalCount / limit),
-    });
+    res.json({ products, total });
   } catch (err) {
-    console.error(err);
+    console.error("Search error:", err);
     res.status(500).json({ error: "Failed to fetch products" });
   }
 });
+
+
 
   // GET /products/needToOrder
   router.get("/needToOrder", async (req: Request, res: Response) => {
@@ -358,6 +353,26 @@ router.patch("/decrement-stock", async (req: Request, res: Response) => {
       res.status(500).json({ error: "Failed to increment product stock" });
     }
   });
+
+  router.get("/search", async (req, res) => {
+  const query = (req.query.query as string)?.trim();
+  if (!query) return res.status(400).json({ error: "Query is required" });
+
+  try {
+    const products = await prisma.product.findMany({
+      where: {
+        OR: [
+          { name: { contains: query, mode: "insensitive" } },
+        ],
+      },
+      take: 10, // limit to top 10 matches
+    });
+    res.json({ products });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
 
 
   // -----------------------------
