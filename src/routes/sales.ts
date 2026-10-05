@@ -26,7 +26,11 @@ import { fulfillment, lineSchema, orderBy, pageParams, paymentMethod, sendPdf } 
 export const estimatesRouter = Router();
 
 const documentSchema = z.object({
-  customerId: z.coerce.number().int().positive().optional().nullable(),
+  // Every sale and estimate belongs to a customer (walk-ins get a quick customer record)
+  customerId: z.coerce
+    .number({ message: "Pick a customer for this sale" })
+    .int()
+    .positive("Pick a customer for this sale"),
   billTo: z.string().trim().default(""),
   shipTo: z.string().trim().default(""),
   fulfillment: fulfillment.default("PICKUP"),
@@ -159,6 +163,9 @@ invoicesRouter.get(
     else if (status) where.status = status as never;
     if (req.query.customerId) where.customerId = Number(req.query.customerId);
     if (req.query.collectionStatus) where.collectionStatus = String(req.query.collectionStatus) as never;
+    // approval=needed → came from an approved estimate; approval=none → direct sale
+    if (req.query.approval === "needed") where.estimateId = { not: null };
+    else if (req.query.approval === "none") where.estimateId = null;
     if (req.query.from || req.query.to) {
       where.issueDate = {
         ...(req.query.from ? { gte: new Date(String(req.query.from)) } : {}),
@@ -180,7 +187,10 @@ invoicesRouter.get(
         take,
         skip,
         orderBy: orderBy(req, ["issueDate", "dueDate", "total", "invoiceNo"] as const, "issueDate"),
-        include: { customer: { select: { id: true, name: true } } },
+        include: {
+          customer: { select: { id: true, name: true } },
+          estimate: { select: { id: true, estimateNo: true, approvedAt: true } },
+        },
       }),
       req.db.invoice.count({ where }),
     ]);
@@ -364,6 +374,7 @@ invoicesRouter.get(
         (pct > 0 && p.earlyDiscountDeadline
           ? `Pay by ${p.earlyDiscountDeadline.toLocaleDateString("en-US")} and take ${pct}% off ($${p.earlyDiscountAmount.toFixed(2)}). `
           : "") + (inv.notes || "Thank you for your business!"),
+      style: "plain", // invoices print as a normal black & white document
     });
   })
 );

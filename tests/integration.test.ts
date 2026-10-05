@@ -167,8 +167,23 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
     assert.equal(again.status, 400, "can't invoice twice");
   });
 
+  test("every sale needs a customer", async () => {
+    const res = await call("POST", "/invoices", {
+      billTo: "Walk-in",
+      lines: [{ productId: ids.product, qty: 1, unitPrice: 80 }],
+    });
+    assert.equal(res.status, 400);
+    assert.match(res.data.error, /customer/i);
+    const est = await call("POST", "/estimates", { lines: [{ productId: ids.product, qty: 1, unitPrice: 80 }] });
+    assert.equal(est.status, 400);
+    const walkIn = await call("POST", "/customers", { name: "Walk-in Counter" });
+    assert.equal(walkIn.status, 201, JSON.stringify(walkIn.data));
+    ids.walkIn = walkIn.data.id;
+  });
+
   test("not enough stock is blocked unless special order", async () => {
     const res = await call("POST", "/invoices", {
+      customerId: ids.walkIn,
       billTo: "Walk-in",
       lines: [{ productId: ids.product, qty: 50, unitPrice: 75 }],
     });
@@ -191,6 +206,7 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
 
   test("register sale paid in cash", async () => {
     const res = await call("POST", "/invoices", {
+      customerId: ids.walkIn,
       billTo: "Walk-in",
       lines: [{ productId: ids.product, qty: 1, unitPrice: 80 }],
       payment: { amount: 87.1, method: "CASH" },
@@ -252,8 +268,35 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
     assert.equal(res.data.bookMethod, "FIFO");
   });
 
+  test("partial payment at the counter leaves the rest on account", async () => {
+    const res = await call("POST", "/invoices", {
+      customerId: ids.walkIn,
+      lines: [{ productId: ids.product, qty: 1, unitPrice: 80 }],
+      payment: { amount: 50, method: "CREDIT" },
+    });
+    assert.equal(res.status, 201, JSON.stringify(res.data));
+    assert.equal(res.data.status, "PARTIAL");
+    const inv = await call("GET", `/invoices/${res.data.id}`);
+    assert.equal(inv.data.balance, r2(87.1 - 50));
+  });
+
+  test("invoice list says whether the sale needed an approval", async () => {
+    const needed = await call("GET", "/invoices?approval=needed");
+    assert.ok(needed.data.items.length >= 1);
+    assert.ok(needed.data.items.every((i: { estimate: unknown }) => i.estimate));
+    const none = await call("GET", "/invoices?approval=none");
+    assert.ok(none.data.items.length >= 1);
+    assert.ok(none.data.items.every((i: { estimate: unknown }) => !i.estimate));
+  });
+
+  test("invoice PDF prints (plain style)", async () => {
+    const pdf = await call("GET", `/invoices/${ids.invoice}/pdf`);
+    assert.equal(pdf.status, 200);
+  });
+
   test("void puts stock back and reverses the books", async () => {
     const sale = await call("POST", "/invoices", {
+      customerId: ids.walkIn,
       billTo: "Walk-in",
       lines: [{ productId: ids.product, qty: 2, unitPrice: 80 }],
     });

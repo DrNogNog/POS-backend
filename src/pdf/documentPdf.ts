@@ -3,15 +3,43 @@
 // Billing Order (supplier bill). Generated on the server from the saved data,
 // so the PDF always matches the books. Uses the store logo and store details
 // from Settings.
+//   style "themed" — brown & cream (estimates, purchase and billing orders)
+//   style "plain"  — a normal black & white business document (invoices)
 // -----------------------------------------------------------------------------
 import fs from "fs";
 import path from "path";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 
-const BROWN = rgb(0.36, 0.25, 0.17); // #5C4033
-const LIGHT = rgb(0.96, 0.93, 0.89); // #F5EDE3
-const TEXT = rgb(0.17, 0.13, 0.1);
-const MUTED = rgb(0.45, 0.4, 0.36);
+type Color = ReturnType<typeof rgb>;
+interface Palette {
+  accent: Color; // titles, rules, box borders
+  band: Color | null; // header background (null = none)
+  boxHead: Color; // address box and table header fill
+  boxHeadText: Color;
+  stripe: Color | null; // every other line row
+  text: Color;
+  muted: Color;
+}
+const PALETTES: Record<"themed" | "plain", Palette> = {
+  themed: {
+    accent: rgb(0.36, 0.25, 0.17), // #5C4033
+    band: rgb(0.96, 0.93, 0.89), // #F5EDE3
+    boxHead: rgb(0.36, 0.25, 0.17),
+    boxHeadText: rgb(1, 1, 1),
+    stripe: rgb(0.96, 0.93, 0.89),
+    text: rgb(0.17, 0.13, 0.1),
+    muted: rgb(0.45, 0.4, 0.36),
+  },
+  plain: {
+    accent: rgb(0, 0, 0),
+    band: null,
+    boxHead: rgb(0.9, 0.9, 0.9),
+    boxHeadText: rgb(0, 0, 0),
+    stripe: null,
+    text: rgb(0, 0, 0),
+    muted: rgb(0.35, 0.35, 0.35),
+  },
+};
 
 export interface PdfStore {
   name: string;
@@ -47,6 +75,8 @@ export interface PdfDocumentData {
   lines: PdfLine[];
   totals: [string, number, boolean?][]; // [label, amount, bold?]
   footerNote?: string;
+  /** "plain" = normal black & white document. Default "themed". */
+  style?: "themed" | "plain";
 }
 
 const money = (n: number) =>
@@ -90,6 +120,11 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
   const H = 792;
   const M = 40;
   let page: PDFPage = doc.addPage([W, H]);
+  const C = PALETTES[d.style ?? "themed"];
+  const plain = d.style === "plain";
+  const BROWN = C.accent;
+  const TEXT = C.text;
+  const MUTED = C.muted;
 
   const text = (p: PDFPage, s: string, x: number, y: number, size = 10, f = font, color = TEXT) =>
     p.drawText(safe(s), { x, y, size, font: f, color });
@@ -97,8 +132,12 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
     p.drawText(safe(s), { x: xRight - f.widthOfTextAtSize(safe(s), size), y, size, font: f, color });
 
   // ---- Header band ----
-  page.drawRectangle({ x: 0, y: H - 110, width: W, height: 110, color: LIGHT });
-  page.drawRectangle({ x: 0, y: H - 114, width: W, height: 4, color: BROWN });
+  if (C.band) {
+    page.drawRectangle({ x: 0, y: H - 110, width: W, height: 110, color: C.band });
+    page.drawRectangle({ x: 0, y: H - 114, width: W, height: 4, color: BROWN });
+  } else {
+    page.drawLine({ start: { x: M, y: H - 114 }, end: { x: W - M, y: H - 114 }, thickness: 1, color: BROWN });
+  }
   let headerX = M;
   const logo = loadLogo();
   if (logo) {
@@ -137,8 +176,8 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
   ].entries()) {
     const x = M + i * (boxW + 16);
     page.drawRectangle({ x, y: y - boxH, width: boxW, height: boxH, borderColor: BROWN, borderWidth: 0.8 });
-    page.drawRectangle({ x, y: y - 16, width: boxW, height: 16, color: BROWN });
-    text(page, title.toUpperCase(), x + 8, y - 12, 8.5, bold, rgb(1, 1, 1));
+    page.drawRectangle({ x, y: y - 16, width: boxW, height: 16, color: C.boxHead, borderColor: BROWN, borderWidth: plain ? 0.8 : 0 });
+    text(page, title.toUpperCase(), x + 8, y - 12, 8.5, bold, C.boxHeadText);
     let ly = y - 30;
     for (const line of (body || "").split("\n").filter((l) => l.trim()).slice(0, 4)) {
       text(page, line.trim(), x + 8, ly, 9.5);
@@ -156,8 +195,8 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
   // Column positions: text columns by left edge, number columns by right edge
   const col = { item: M + 6, desc: M + 100, descWidth: 245, qtyRight: M + 395, priceRight: M + 465, amountRight: W - M - 6 };
   const drawHeader = (p: PDFPage, yy: number) => {
-    p.drawRectangle({ x: M, y: yy - 18, width: W - 2 * M, height: 18, color: BROWN });
-    const white = rgb(1, 1, 1);
+    p.drawRectangle({ x: M, y: yy - 18, width: W - 2 * M, height: 18, color: C.boxHead, borderColor: BROWN, borderWidth: plain ? 0.8 : 0 });
+    const white = C.boxHeadText;
     text(p, "ITEM", col.item, yy - 13, 8.5, bold, white);
     text(p, "DESCRIPTION", col.desc, yy - 13, 8.5, bold, white);
     right(p, "QTY", col.qtyRight, yy - 13, 8.5, bold, white);
@@ -174,7 +213,11 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
       page = doc.addPage([W, H]);
       y = drawHeader(page, H - M);
     }
-    if (idx % 2 === 1) page.drawRectangle({ x: M, y: y - rowH + 10, width: W - 2 * M, height: rowH, color: LIGHT });
+    if (C.stripe && idx % 2 === 1) page.drawRectangle({ x: M, y: y - rowH + 10, width: W - 2 * M, height: rowH, color: C.stripe });
+    if (plain) {
+      const lineY = y - rowH + 10;
+      page.drawLine({ start: { x: M, y: lineY }, end: { x: W - M, y: lineY }, thickness: 0.4, color: rgb(0.8, 0.8, 0.8) });
+    }
     text(page, l.itemCode, col.item, y, 9, bold);
     descLines.forEach((dl, i) => text(page, dl, col.desc, y - i * 11, 9));
     right(page, String(Number(l.qty.toFixed(3))), col.qtyRight, y, 9);
