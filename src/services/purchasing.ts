@@ -208,7 +208,7 @@ export async function receivePurchaseOrder(
       source: "PURCHASE",
       sourceRef: po.poNo,
       date: billDate,
-      updateStandardCost: true,
+      costUpdate: "average", // new purchases average into the standard cost
     });
     await tx.purchaseOrderLine.update({
       where: { id: r.line.id },

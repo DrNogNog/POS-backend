@@ -17,6 +17,7 @@ import { adjustStock, receiveStock } from "../services/inventory.js";
 import { postEntry } from "../services/journal.js";
 import { inventoryAdjustmentEntry } from "../domain/accounts.js";
 import { getSettings } from "../services/settings.js";
+import { availability } from "../services/availability.js";
 import { orderBy, pageParams } from "./_shared.js";
 
 const router = Router();
@@ -37,6 +38,8 @@ const upload = multer({
     cb(null, ["image/png", "image/jpeg", "image/webp"].includes(file.mimetype)),
   limits: { fileSize: 5 * 1024 * 1024 },
 });
+
+const MAX_IMAGES = 12;
 
 // ---- Validation -------------------------------------------------------------
 const productSchema = z.object({
@@ -138,6 +141,21 @@ router.get(
   })
 );
 
+/** On hand, promised on estimates/approvals, and available — for the sale screen. */
+router.get(
+  "/availability",
+  route(async (req, res) => {
+    const ids = String(req.query.ids || "")
+      .split(",")
+      .map(Number)
+      .filter((x) => Number.isInteger(x) && x > 0)
+      .slice(0, 200);
+    const excludeEstimateId = req.query.excludeEstimate ? Number(req.query.excludeEstimate) : null;
+    const map = await availability(req.db as never, ids, { excludeEstimateId });
+    res.json([...map.values()]);
+  })
+);
+
 router.get(
   "/collections",
   route(async (req, res) => {
@@ -191,7 +209,7 @@ router.get(
 router.post(
   "/",
   allow("MANAGER"),
-  upload.array("images", 8),
+  upload.array("images", 12),
   route(async (req, res) => {
     const input = parse(productSchema, cleanForm(req.body));
     const files = (req.files as Express.Multer.File[] | undefined) ?? [];
@@ -229,7 +247,7 @@ router.post(
 router.put(
   "/:id",
   allow("MANAGER"),
-  upload.array("images", 8),
+  upload.array("images", 12),
   route(async (req, res) => {
     const id = idParam(req);
     const form = cleanForm(req.body);
@@ -241,6 +259,7 @@ router.put(
       const before = await tx.product.findUnique({ where: { id } });
       if (!before) throw notFound("Product");
       const images = [...before.images.filter((i) => !removeImages.includes(i)), ...files.map((f) => f.filename)];
+      if (images.length > MAX_IMAGES) throw badRequest(`An item can have up to ${MAX_IMAGES} photos. Remove some first.`);
       // If list price or discount changed but cost wasn't typed, recompute cost.
       const data: Prisma.ProductUpdateInput = { ...input, images };
       if (input.unitCost === undefined && (input.listPrice !== undefined || input.supplierDiscountPct !== undefined)) {
@@ -301,6 +320,7 @@ router.delete(
 const adjustSchema = z.object({
   qtyChange: z.coerce.number().refine((n) => n !== 0, "Quantity change cannot be zero"),
   unitCost: z.coerce.number().min(0).optional(),
+  costUpdate: z.enum(["average", "replace", "keep"]).default("average"),
   reason: z.string().trim().min(1, "Give a reason (count, damage, opening stock...)"),
 });
 

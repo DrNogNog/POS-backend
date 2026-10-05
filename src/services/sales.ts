@@ -33,6 +33,7 @@ import {
   statusFor,
 } from "../domain/terms.js";
 import { getDefaultTaxRatePct, getSettings } from "./settings.js";
+import { assertAvailable } from "./availability.js";
 import { issueStock, receiveStock } from "./inventory.js";
 import { postEntry } from "./journal.js";
 
@@ -55,6 +56,8 @@ export interface DocumentInput {
   taxRatePct?: number | null;
   notes?: string;
   lines: LineInput[];
+  /** Save an estimate even though there isn't enough stock available for it. */
+  allowShortage?: boolean;
 }
 
 /** Look up products for the lines and fill in item code / description / taxable. */
@@ -101,6 +104,8 @@ export async function saveEstimate(
 ) {
   const settings = await getSettings(tx);
   const lines = await resolveLines(tx, input.lines);
+  // Count what's already promised on other estimates (not this one)
+  await assertAvailable(tx, lines, { excludeEstimateId: input.id, allow: input.allowShortage, what: "estimate" });
   const taxRatePct = await resolveTaxRate(tx, input.customerId, input.taxRatePct);
   const totals = documentTotals(lines, input.discountAmount ?? 0, taxRatePct);
 
@@ -206,6 +211,8 @@ export interface InvoiceInput extends DocumentInput {
 export async function createInvoice(tx: Tx, input: InvoiceInput, user: AuthUser) {
   const settings = await getSettings(tx);
   const lines = await resolveLines(tx, input.lines);
+  // Stock promised on estimates counts as taken — except this sale's own estimate
+  await assertAvailable(tx, lines, { excludeEstimateId: input.estimateId, allow: input.allowBackorder, what: "invoice" });
   const taxRatePct = await resolveTaxRate(tx, input.customerId, input.taxRatePct);
   const totals = documentTotals(lines, input.discountAmount ?? 0, taxRatePct);
 
@@ -253,6 +260,7 @@ export async function createInvoice(tx: Tx, input: InvoiceInput, user: AuthUser)
       shipTo: input.shipTo ?? customer?.shippingAddress ?? "",
       fulfillment: input.fulfillment ?? customer?.fulfillment ?? "PICKUP",
       salesperson: input.salesperson || user.name,
+      priceTierCode: input.priceTierCode ?? "",
       subtotal: totals.subtotal,
       discountAmount: totals.discountAmount,
       taxRatePct,
@@ -578,6 +586,7 @@ export async function voidInvoice(tx: Tx, invoiceId: number, reason: string, use
       source: "RETURN",
       sourceRef: inv.invoiceNo,
       note: `Void ${inv.invoiceNo}`,
+      costUpdate: "keep", // the units come back at what they cost; standard cost stays
     });
   }
   const original = await tx.journalEntry.findMany({

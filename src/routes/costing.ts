@@ -93,4 +93,78 @@ router.get(
   })
 );
 
+/**
+ * Margins per invoice (and per price level): what each sale earned after the
+ * cost of the goods that went out. Defaults to the last 90 days.
+ */
+router.get(
+  "/invoices",
+  route(async (req, res) => {
+    const to = req.query.to ? new Date(String(req.query.to) + "T23:59:59") : new Date();
+    const from = req.query.from ? new Date(String(req.query.from)) : new Date(to.getTime() - 90 * 86400000);
+    const level = String(req.query.level || "");
+    const invoices = await req.db.invoice.findMany({
+      where: {
+        status: { not: "VOID" },
+        issueDate: { gte: from, lte: to },
+        ...(level ? { priceTierCode: level === "none" ? "" : level } : {}),
+      },
+      orderBy: { issueDate: "desc" },
+      take: 500,
+      include: {
+        customer: { select: { id: true, name: true } },
+        estimate: { select: { id: true, estimateNo: true } },
+        lines: { orderBy: { sortOrder: "asc" } },
+      },
+    });
+    const rows = invoices.map((inv) => {
+      const netSales = round2(num(inv.subtotal) - num(inv.discountAmount));
+      const cogs = num(inv.cogsTotal);
+      return {
+        id: inv.id,
+        invoiceNo: inv.invoiceNo,
+        issueDate: inv.issueDate,
+        customer: inv.customer,
+        estimate: inv.estimate,
+        priceTierCode: inv.priceTierCode,
+        netSales,
+        discount: num(inv.discountAmount),
+        cogs,
+        grossProfit: round2(netSales - cogs),
+        marginPct: marginPct(netSales, cogs),
+        lines: inv.lines.map((l) => ({
+          itemCode: l.itemCode,
+          description: l.description,
+          productId: l.productId,
+          qty: num(l.qty),
+          unitPrice: num(l.unitPrice),
+          unitCost: num(l.unitCost),
+          lineTotal: num(l.lineTotal),
+          costTotal: num(l.costTotal),
+          marginPct: marginPct(num(l.lineTotal), num(l.costTotal)),
+        })),
+      };
+    });
+    const byLevel = new Map<string, { level: string; invoices: number; netSales: number; cogs: number }>();
+    for (const r of rows) {
+      const k = r.priceTierCode || "";
+      const b = byLevel.get(k) ?? { level: k, invoices: 0, netSales: 0, cogs: 0 };
+      b.invoices++;
+      b.netSales = round2(b.netSales + r.netSales);
+      b.cogs = round2(b.cogs + r.cogs);
+      byLevel.set(k, b);
+    }
+    const tiers = await req.db.priceTier.findMany({ orderBy: { sortOrder: "asc" } });
+    const order = (k: string) => { const i = tiers.findIndex((t) => t.code === k); return i < 0 ? 99 : i; };
+    res.json({
+      from,
+      to,
+      rows,
+      levels: [...byLevel.values()]
+        .sort((a, b) => order(a.level) - order(b.level))
+        .map((b) => ({ ...b, grossProfit: round2(b.netSales - b.cogs), marginPct: marginPct(b.netSales, b.cogs) })),
+    });
+  })
+);
+
 export default router;

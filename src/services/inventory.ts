@@ -14,6 +14,18 @@ import { num, round2, round3, round4 } from "../lib/money.js";
 import { postEntry } from "./journal.js";
 import { logActivity } from "../lib/history.js";
 
+/**
+ * Weighted average cost after adding units:
+ *   (units on hand x cost now + units added x their cost) / all units.
+ * Negative stock (backorders) counts as zero, so the new cost isn't skewed.
+ */
+export function averageCost(onHand: number, costNow: number, qtyAdded: number, costAdded: number): number {
+  const have = Math.max(0, onHand);
+  if (have + qtyAdded <= 0) return round4(costAdded);
+  if (have === 0 || costNow <= 0) return round4(costAdded);
+  return round4((have * costNow + qtyAdded * costAdded) / (have + qtyAdded));
+}
+
 export async function receiveStock(
   tx: Tx,
   i: {
@@ -24,7 +36,13 @@ export async function receiveStock(
     sourceRef?: string;
     date?: Date;
     note?: string;
-    updateStandardCost?: boolean;
+    /**
+     * What the item's standard cost (price in) does:
+     *   average — weighted average of the units on hand and these units (default)
+     *   replace — becomes this cost
+     *   keep    — stays as it is
+     */
+    costUpdate?: "average" | "replace" | "keep";
   }
 ) {
   if (i.qty <= 0) throw badRequest("Quantity received must be more than zero");
@@ -56,11 +74,18 @@ export async function receiveStock(
       createdAt: i.date ?? new Date(),
     },
   });
+  const before = await tx.product.findUnique({ where: { id: i.productId }, select: { qtyOnHand: true, unitCost: true } });
+  const newCost =
+    (i.costUpdate ?? "average") === "keep" || !before
+      ? undefined
+      : i.costUpdate === "replace"
+        ? unitCost
+        : averageCost(num(before.qtyOnHand), num(before.unitCost), qty, unitCost);
   await tx.product.update({
     where: { id: i.productId },
     data: {
       qtyOnHand: { increment: qty },
-      ...(i.updateStandardCost ? { unitCost } : {}),
+      ...(newCost !== undefined ? { unitCost: newCost } : {}),
     },
   });
   return { qty, unitCost, totalCost: round2(qty * unitCost) };
@@ -138,6 +163,7 @@ export async function adjustStock(
     qtyChange: number;
     unitCost?: number;
     reason: string;
+    costUpdate?: "average" | "replace" | "keep";
     method: CostingMethod;
     userName: string;
   }
@@ -155,6 +181,7 @@ export async function adjustStock(
       source: "ADJUSTMENT",
       sourceRef: ref,
       note: i.reason,
+      costUpdate: i.costUpdate ?? "average",
     });
     value = res.totalCost;
   } else if (i.qtyChange < 0) {

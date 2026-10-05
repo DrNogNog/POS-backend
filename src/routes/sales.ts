@@ -39,6 +39,8 @@ const documentSchema = z.object({
   taxRatePct: z.coerce.number().min(0).max(30).optional().nullable(),
   notes: z.string().trim().default(""),
   lines: z.array(lineSchema).min(1, "Add at least one line item"),
+  /** Save an estimate even if stock (after other estimates) is short. */
+  allowShortage: z.boolean().default(false),
 });
 
 estimatesRouter.get(

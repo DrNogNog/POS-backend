@@ -294,6 +294,79 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
     assert.equal(pdf.status, 200);
   });
 
+  test("estimates and approvals count as promised stock", async () => {
+    const imp = await call("POST", "/products/import", {
+      rows: [{ itemCode: "ZT-COMMIT", name: "Commit test cabinet", listPrice: 20, supplierDiscountPct: 50, qtyOnHand: 5 }],
+    });
+    assert.equal(imp.status, 200, JSON.stringify(imp.data));
+    const found = await call("GET", "/products?q=ZT-COMMIT");
+    const pid = found.data.items[0].id;
+    ids.commit = pid;
+    const line = (qty: number) => [{ productId: pid, qty, unitPrice: 15 }];
+
+    let av = await call("GET", `/products/availability?ids=${pid}`);
+    assert.deepEqual([av.data[0].onHand, av.data[0].available], [5, 5]);
+
+    const first = await call("POST", "/estimates", { customerId: ids.walkIn, lines: line(3) });
+    assert.equal(first.status, 201, JSON.stringify(first.data));
+    av = await call("GET", `/products/availability?ids=${pid}`);
+    assert.equal(av.data[0].pending, 3);
+    assert.equal(av.data[0].available, 2);
+    // Editing the same estimate doesn't count against itself
+    const edit = await call("PUT", `/estimates/${first.data.id}`, { customerId: ids.walkIn, lines: line(5) });
+    assert.equal(edit.status, 200, JSON.stringify(edit.data));
+    await call("PUT", `/estimates/${first.data.id}`, { customerId: ids.walkIn, lines: line(3) });
+
+    const second = await call("POST", "/estimates", { customerId: ids.walkIn, lines: line(3) });
+    assert.equal(second.status, 400);
+    assert.match(second.data.error, /already promised/);
+    const anyway = await call("POST", "/estimates", { customerId: ids.walkIn, lines: line(3), allowShortage: true });
+    assert.equal(anyway.status, 201, JSON.stringify(anyway.data));
+
+    // A direct sale can't take stock promised to the estimates
+    const sale = await call("POST", "/invoices", { customerId: ids.walkIn, lines: line(1) });
+    assert.equal(sale.status, 400);
+    assert.match(sale.data.error, /Special order/);
+
+    // Invoicing the approved estimate itself is fine (its own units aren't "promised away")
+    await call("POST", `/estimates/${anyway.data.id}/status`, { status: "REJECTED" });
+    await call("POST", `/estimates/${first.data.id}/status`, { status: "APPROVED" });
+    const inv = await call("POST", `/estimates/${first.data.id}/invoice`, {});
+    assert.equal(inv.status, 201, JSON.stringify(inv.data));
+    av = await call("GET", `/products/availability?ids=${pid}`);
+    assert.deepEqual([av.data[0].onHand, av.data[0].available], [2, 2]);
+  });
+
+  test("adding stock averages the cost in (or replaces / keeps it)", async () => {
+    // 2 on hand at $10; add 2 at $20 → average $15
+    const add = await call("POST", `/products/${ids.commit}/adjust`, { qtyChange: 2, unitCost: 20, reason: "Count" });
+    assert.equal(add.status, 200, JSON.stringify(add.data));
+    let p = await call("GET", `/products/${ids.commit}`);
+    assert.equal(Number(p.data.unitCost), 15);
+    await call("POST", `/products/${ids.commit}/adjust`, { qtyChange: 1, unitCost: 30, reason: "Count", costUpdate: "keep" });
+    p = await call("GET", `/products/${ids.commit}`);
+    assert.equal(Number(p.data.unitCost), 15);
+    await call("POST", `/products/${ids.commit}/adjust`, { qtyChange: 1, unitCost: 12, reason: "Count", costUpdate: "replace" });
+    p = await call("GET", `/products/${ids.commit}`);
+    assert.equal(Number(p.data.unitCost), 12);
+  });
+
+  test("invoices remember their price level for the margin report", async () => {
+    const sale = await call("POST", "/invoices", {
+      customerId: ids.walkIn,
+      priceTierCode: "B",
+      lines: [{ productId: ids.commit, qty: 1, unitPrice: 30 }],
+    });
+    assert.equal(sale.status, 201, JSON.stringify(sale.data));
+    const rep = await call("GET", "/costing/invoices?level=B");
+    assert.equal(rep.status, 200, JSON.stringify(rep.data));
+    const row = rep.data.rows.find((r: { id: number }) => r.id === sale.data.id);
+    assert.ok(row, "invoice listed under level B");
+    assert.equal(row.priceTierCode, "B");
+    assert.equal(row.netSales, 30);
+    assert.ok(rep.data.levels.some((l: { level: string }) => l.level === "B"));
+  });
+
   test("void puts stock back and reverses the books", async () => {
     const sale = await call("POST", "/invoices", {
       customerId: ids.walkIn,
@@ -330,9 +403,11 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
     const bs = await call("GET", "/reports/balance-sheet");
     assert.equal(bs.data.totals.assets, bs.data.totals.liabilitiesAndEquity);
     // Inventory on the books = value of the cost layers on hand
-    const p = await call("GET", `/products/${ids.product}`);
+    const all = await call("GET", "/products?limit=500");
+    let layers = 0;
+    for (const item of all.data.items) layers += (await call("GET", `/products/${item.id}`)).data.stockValue;
     const invAcct = bs.data.assets.find((a: Any) => a.code === "1200").balance;
-    assert.ok(Math.abs(invAcct - p.data.stockValue) < 0.05, `books ${invAcct} vs layers ${p.data.stockValue}`);
+    assert.ok(Math.abs(invAcct - layers) < 0.05, `books ${invAcct} vs layers ${layers}`);
     const pl = await call("GET", "/reports/income-statement");
     assert.equal(pl.status, 200);
     assert.ok(pl.data.totals.grossProfit > 0);
