@@ -130,7 +130,8 @@ estimatesRouter.get(
       leftBox: est.billTo,
       rightBoxTitle: est.fulfillment === "DELIVERY" ? "Deliver To" : "Ship To / Pickup",
       rightBox: est.fulfillment === "DELIVERY" ? est.shipTo || est.billTo : est.shipTo || "Customer pickup",
-      meta: [["Price level", est.priceTierCode], ["Status", est.status]],
+      // Price levels are internal, so they are never printed on customer documents
+      meta: [["Status", est.status === "PENDING" ? "Awaiting approval" : est.status.toLowerCase()]],
       lines: est.lines.map((l) => ({
         itemCode: l.itemCode,
         description: l.description,
