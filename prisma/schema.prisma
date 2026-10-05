@@ -1,6 +1,28 @@
+// =============================================================================
+//  POS database schema
+//
+//  The SAME schema is used for every store. Each store (Store A, Store B) has
+//  its OWN PostgreSQL database, so inventory, customers, taxes, and books are
+//  completely separate. See README.md -> "Two stores, two databases".
+//
+//  Sections:
+//    1. Store setup ........ StoreSettings, TaxRate, PriceTier, User
+//    2. Catalog ............ Category, Supplier, Product, ProductImage
+//    3. Inventory .......... InventoryLot, InventoryMovement
+//    4. Sales (A/R) ........ Customer, Estimate(+Line), Invoice(+Line),
+//                            CustomerPayment, InvoiceAdjustment
+//    5. Purchasing (A/P) ... PurchaseOrder(+Line), SupplierBill(+Line),
+//                            SupplierPayment, BillAdjustment
+//    6. Accounting ......... Account, JournalEntry, JournalLine
+//    7. Payroll ............ Employee, PayrollRun, Paycheck
+//    8. History ............ ActivityLog, Archive
+//
+//  Money is always Decimal(12,2). Quantities are Decimal(12,3) so items sold
+//  by weight or length (fasteners, wire, chain) work as well as "each".
+// =============================================================================
+
 generator client {
-  provider   = "prisma-client-js"
-  engineType = "binary"
+  provider = "prisma-client-js"
 }
 
 datasource db {
@@ -8,99 +30,716 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// -----------------------------------------------------------------------------
+// 1. STORE SETUP
+// -----------------------------------------------------------------------------
+
+/// One row per database (id = 1). Holds the store's identity and policies.
+model StoreSettings {
+  id      Int     @id @default(1)
+  name    String  @default("My Store")
+  address String  @default("")
+  city    String  @default("")
+  state   String  @default("")
+  zip     String  @default("")
+  phone   String  @default("")
+  fax     String  @default("")
+  email   String  @default("")
+  website String  @default("")
+
+  /// How cost of goods sold is booked: FIFO, LIFO or WAC (weighted average).
+  costingMethod CostingMethod @default(FIFO)
+
+  // ---- Customer (A/R) policies ----
+  defaultCustomerTermsDays Int     @default(30) // 0 = due on receipt
+  earlyPayDiscountPct      Decimal @default(2) @db.Decimal(5, 2) // e.g. 2 => "2/10 net 30"
+  earlyPayDiscountDays     Int     @default(10)
+  lateFeePct               Decimal @default(1.5) @db.Decimal(5, 2) // % of open balance per late fee
+  lateFeeFlat              Decimal @default(0) @db.Decimal(12, 2)
+  collectionsAfterDays     Int     @default(90) // suggest collections after N days past due
+
+  // ---- A/R health board thresholds ----
+  /// A/R is "too high" when Days Sales Outstanding is above this many days.
+  arHighDso    Int @default(45)
+  /// A/R is "too low / too rigid" when DSO is below this many days.
+  arLowDso     Int @default(10)
+
+  invoicePrefix  String @default("INV-")
+  estimatePrefix String @default("EST-")
+  poPrefix       String @default("PO-")
+
+  updatedAt DateTime @updatedAt
+}
+
+enum CostingMethod {
+  FIFO
+  LIFO
+  WAC
+}
+
+/// Sales tax rates for THIS store. One is the default.
+model TaxRate {
+  id        Int      @id @default(autoincrement())
+  name      String   @unique // "NY - Brooklyn", "Out of state", "Exempt"
+  ratePct   Decimal  @db.Decimal(6, 3) // 8.875
+  isDefault Boolean  @default(false)
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+}
+
+/// Price levels (AA, A, B, C, D). Selling price = unit cost x (1 + markup%).
+model PriceTier {
+  code        String  @id // "AA", "A", "B", "C", "D"
+  name        String
+  markupPct   Decimal @db.Decimal(6, 2)
+  sortOrder   Int     @default(0)
+  description String  @default("")
+}
+
 model User {
   id        Int      @id @default(autoincrement())
   email     String   @unique
   password  String
-  name      String?
-  role      String // "admin" | "cashier"
+  name      String   @default("")
+  role      Role     @default(CASHIER)
+  active    Boolean  @default(true)
   createdAt DateTime @default(now())
+}
+
+enum Role {
+  OWNER // everything, including users and settings
+  MANAGER // everything except users
+  ACCOUNTANT // books, A/R, A/P, payroll, reports
+  CASHIER // sales, customers, look up inventory
+}
+
+// -----------------------------------------------------------------------------
+// 2. CATALOG
+// -----------------------------------------------------------------------------
+
+model Category {
+  id        Int       @id @default(autoincrement())
+  name      String    @unique
+  sortOrder Int       @default(0)
+  products  Product[]
+}
+
+model Supplier {
+  id            Int     @id @default(autoincrement())
+  name          String  @unique
+  contactName   String  @default("")
+  phone         String  @default("")
+  email         String  @default("")
+  address       String  @default("")
+  accountNumber String  @default("") // our account # with them
+
+  // ---- Contract / terms (we are the retailer, they bill us) ----
+  paymentTermsDays     Int       @default(30) // 15, 30, 45 ...
+  tradeDiscountPct     Decimal   @default(0) @db.Decimal(5, 2) // discount off list on every purchase
+  earlyPayDiscountPct  Decimal   @default(0) @db.Decimal(5, 2) // e.g. 2 => 2% if paid early
+  earlyPayDiscountDays Int       @default(0)
+  lateFeePct           Decimal   @default(0) @db.Decimal(5, 2)
+  lateFeeFlat          Decimal   @default(0) @db.Decimal(12, 2)
+  contractStart        DateTime?
+  contractEnd          DateTime?
+  contractNotes        String    @default("")
+
+  rating    Int?     // 1-5, relationship quality
+  notes     String   @default("")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products       Product[]
+  purchaseOrders PurchaseOrder[]
+  bills          SupplierBill[]
+  payments       SupplierPayment[]
 }
 
 model Product {
-  id          Int                @id @default(autoincrement())
+  id          Int       @id @default(autoincrement())
+  /// Item code / model, e.g. "W0930", "WDC2430", "AL-B09". Unique per store.
+  itemCode    String    @unique
   name        String
-  description String
-  inputcost   Decimal           @db.Decimal(10, 2)
-  deletedAt   DateTime? // optional soft delete
-  images      String[]
-  stock       Int
-  vendors     String[]
-  logs        ProductChangeLog[]
-  needToOrder Int  @default(0)
-  billing     Boolean?
-  createdAt DateTime @default(now())
+  description String    @default("")
+  categoryId  Int?
+  category    Category? @relation(fields: [categoryId], references: [id])
+  supplierId  Int?
+  supplier    Supplier? @relation(fields: [supplierId], references: [id])
+
+  /// Door style / collection for cabinets ("Avalon", "Nova"...). Blank otherwise.
+  collection String @default("")
+  unit       String @default("each") // each, box, lb, ft ...
+
+  // ---- Prices ----
+  listPrice           Decimal  @default(0) @db.Decimal(12, 2) // supplier list / MSRP ("price in" before discount)
+  supplierDiscountPct Decimal  @default(0) @db.Decimal(5, 2) // our discount off list from supplier
+  unitCost            Decimal  @default(0) @db.Decimal(12, 2) // standard cost we pay = list - discount
+  /// Optional fixed selling price. If null, price = unitCost x (1 + tier markup).
+  sellPriceOverride   Decimal? @db.Decimal(12, 2)
+  taxable             Boolean  @default(true)
+
+  // ---- Stock ----
+  /// Cached sum of open inventory lots. Updated only by the inventory service.
+  qtyOnHand    Decimal @default(0) @db.Decimal(12, 3)
+  reorderPoint Decimal @default(0) @db.Decimal(12, 3)
+  reorderQty   Decimal @default(0) @db.Decimal(12, 3)
+
+  images    String[]
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  lots           InventoryLot[]
+  movements      InventoryMovement[]
+  estimateLines  EstimateLine[]
+  invoiceLines   InvoiceLine[]
+  purchaseLines  PurchaseOrderLine[]
+
+  @@index([categoryId])
+  @@index([supplierId])
+  @@index([collection])
 }
 
-model BillingPDF {
-  id          Int      @id @default(autoincrement())
-  orderId     Int
-  invoiceNo   String   @unique
-  cost        Decimal  @db.Decimal(10, 2)  // Total invoice amount
-  amountPaid  Decimal  @default(0) @db.Decimal(10, 2)  // Amount already paid
-  paidAt      DateTime?                   // Null until fully paid
-  pdf         Bytes
-  createdAt   DateTime @default(now())
+// -----------------------------------------------------------------------------
+// 3. INVENTORY  (cost layers make FIFO / LIFO / weighted average possible)
+// -----------------------------------------------------------------------------
 
-  @@map("billing_pdfs")
+/// One "layer" of stock bought at one cost. Sales consume layers.
+model InventoryLot {
+  id           Int      @id @default(autoincrement())
+  productId    Int
+  product      Product  @relation(fields: [productId], references: [id])
+  receivedAt   DateTime @default(now())
+  qtyReceived  Decimal  @db.Decimal(12, 3)
+  qtyRemaining Decimal  @db.Decimal(12, 3)
+  unitCost     Decimal  @db.Decimal(12, 4)
+  source       String // "PURCHASE", "OPENING", "ADJUSTMENT", "RETURN"
+  sourceRef    String   @default("") // e.g. "PO-1003"
+
+  @@index([productId, receivedAt])
+}
+
+/// Every change in stock, in or out, with its cost. This is the audit trail
+/// the costing screen replays to compare FIFO, LIFO and weighted average.
+model InventoryMovement {
+  id        Int          @id @default(autoincrement())
+  productId Int
+  product   Product      @relation(fields: [productId], references: [id])
+  type      MovementType
+  qty       Decimal      @db.Decimal(12, 3) // always positive
+  unitCost  Decimal      @db.Decimal(12, 4)
+  totalCost Decimal      @db.Decimal(12, 2)
+  reference String       @default("") // "INV-1001", "PO-1003"
+  note      String       @default("")
+  createdAt DateTime     @default(now())
+
+  @@index([productId, createdAt])
+}
+
+enum MovementType {
+  RECEIVE // bought from supplier
+  SALE // sold to customer
+  ADJUST_IN // count correction / opening stock
+  ADJUST_OUT // damage, shrinkage
+  RETURN_IN // customer return
+}
+
+// -----------------------------------------------------------------------------
+// 4. SALES / ACCOUNTS RECEIVABLE
+// -----------------------------------------------------------------------------
+
+model Customer {
+  id       Int     @id @default(autoincrement())
+  name     String
+  company  String  @default("")
+  phone    String  @default("")
+  email    String  @default("")
+  billingAddress  String @default("")
+  shippingAddress String @default("")
+
+  fulfillment   Fulfillment @default(PICKUP) // preferred: pickup or delivery
+  deliveryNotes String      @default("")
+
+  priceTierCode String  @default("AA")
+  termsDays     Int     @default(0) // 0 = pay now, 30 / 60 / 90 = on account
+  creditLimit   Decimal @default(0) @db.Decimal(12, 2)
+  taxExempt     Boolean @default(false)
+  taxExemptId   String  @default("")
+
+  /// Card on file: we NEVER store the full card number (PCI rules).
+  /// Keep only the processor's token + brand + last 4 + expiry.
+  cardBrand String @default("")
+  cardLast4 String @default("")
+  cardExp   String @default("") // "MM/YY"
+  cardToken String @default("") // token from your card processor
+
+  notes     String   @default("")
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  estimates Estimate[]
+  invoices  Invoice[]
+  payments  CustomerPayment[]
+
+  @@index([name])
+  @@index([phone])
+}
+
+enum Fulfillment {
+  PICKUP
+  DELIVERY
 }
 
 model Estimate {
-  id         Int      @id @default(autoincrement())
-  estimateNo String   @unique
-  date       DateTime
-  billTo     String
-  shipTo     String
-  subtotal   Float
-  discount   Float
-  total      Float
-  pdfData    Bytes
-  approved   Boolean  @default(false)
-  invoiced   Boolean  @default(false)
-  createdAt  DateTime @default(now())
-  userId     Int?
+  id         Int            @id @default(autoincrement())
+  estimateNo String         @unique
+  customerId Int?
+  customer   Customer?      @relation(fields: [customerId], references: [id])
+  date       DateTime       @default(now())
+  status     EstimateStatus @default(PENDING)
 
-  // Optional / extra fields
-  companyName  String?
-  companyAddr1 String?
-  companyAddr2 String?
-  phone        String?
-  fax          String?
-  email        String?
-  website      String?
-  items        Json?
+  billTo      String      @default("")
+  shipTo      String      @default("")
+  fulfillment Fulfillment @default(PICKUP)
+  priceTierCode String    @default("AA")
+
+  subtotal       Decimal @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2)
+  taxRatePct     Decimal @default(0) @db.Decimal(6, 3)
+  taxAmount      Decimal @default(0) @db.Decimal(12, 2)
+  total          Decimal @db.Decimal(12, 2)
+
+  notes      String    @default("")
+  approvedAt DateTime?
+  createdBy  String    @default("")
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  lines   EstimateLine[]
+  invoice Invoice?
+}
+
+enum EstimateStatus {
+  PENDING // waiting for customer approval
+  APPROVED
+  REJECTED
+  INVOICED
+}
+
+model EstimateLine {
+  id          Int      @id @default(autoincrement())
+  estimateId  Int
+  estimate    Estimate @relation(fields: [estimateId], references: [id], onDelete: Cascade)
+  productId   Int?
+  product     Product? @relation(fields: [productId], references: [id])
+  itemCode    String   @default("")
+  description String   @default("")
+  qty         Decimal  @db.Decimal(12, 3)
+  unitPrice   Decimal  @db.Decimal(12, 2)
+  lineTotal   Decimal  @db.Decimal(12, 2)
+  sortOrder   Int      @default(0)
 }
 
 model Invoice {
-  id          Int       @id @default(autoincrement())
-  invoiceNo   String    @unique
-  total       Decimal   @db.Decimal(10, 2)
-  paidAmount  Decimal   @default(0) @db.Decimal(10, 2)    // ← ADD THIS
-  dueDate     DateTime                                          // ← ADD THIS (invoice due date)
-  pdf         Bytes?
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  status      String    @default("PENDING")               // PENDING | PAID | PARTIALLY_PAID | OVERDUE
+  id         Int       @id @default(autoincrement())
+  invoiceNo  String    @unique
+  customerId Int?
+  customer   Customer? @relation(fields: [customerId], references: [id])
+  estimateId Int?      @unique
+  estimate   Estimate? @relation(fields: [estimateId], references: [id])
+
+  issueDate DateTime @default(now())
+  termsDays Int      @default(0)
+  dueDate   DateTime
+
+  billTo      String      @default("")
+  shipTo      String      @default("")
+  fulfillment Fulfillment @default(PICKUP)
+  salesperson String      @default("")
+
+  subtotal       Decimal @db.Decimal(12, 2)
+  discountAmount Decimal @default(0) @db.Decimal(12, 2) // discount given at sale
+  taxRatePct     Decimal @default(0) @db.Decimal(6, 3)
+  taxAmount      Decimal @default(0) @db.Decimal(12, 2)
+  total          Decimal @db.Decimal(12, 2) // original amount billed
+  cogsTotal      Decimal @default(0) @db.Decimal(12, 2) // cost of goods sold
+
+  // Early-payment discount offered on this invoice ("2/10 net 30")
+  earlyPayDiscountPct  Decimal @default(0) @db.Decimal(5, 2)
+  earlyPayDiscountDays Int     @default(0)
+
+  // Running balances (kept in sync by the invoicing service)
+  amountPaid     Decimal @default(0) @db.Decimal(12, 2) // cash received
+  discountsTaken Decimal @default(0) @db.Decimal(12, 2) // early-pay discounts granted
+  lateFees       Decimal @default(0) @db.Decimal(12, 2) // late fees added
+  writtenOff     Decimal @default(0) @db.Decimal(12, 2) // bad debt
+
+  status           InvoiceStatus    @default(OPEN)
+  collectionStatus CollectionStatus @default(NONE)
+  notes            String           @default("")
+  createdBy        String           @default("")
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  lines       InvoiceLine[]
+  payments    CustomerPayment[]
+  adjustments InvoiceAdjustment[]
+
+  @@index([customerId, issueDate])
+  @@index([status, dueDate])
 }
 
-model ProductChangeLog {
-  id        Int      @id @default(autoincrement())
-  productId Int
-  action    String // CREATE, UPDATE, DELETE, DUPLICATE
-  changes   Json?
-  createdAt DateTime @default(now())
-
-  product Product @relation(fields: [productId], references: [id])
+enum InvoiceStatus {
+  OPEN
+  PARTIAL
+  PAID
+  VOID
 }
 
+enum CollectionStatus {
+  NONE
+  LATE_FEE // late fee(s) charged
+  COLLECTIONS // sent to collections agency
+  WRITTEN_OFF // gave up, booked as bad debt
+}
 
+model InvoiceLine {
+  id          Int      @id @default(autoincrement())
+  invoiceId   Int
+  invoice     Invoice  @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  productId   Int?
+  product     Product? @relation(fields: [productId], references: [id])
+  itemCode    String   @default("")
+  description String   @default("")
+  qty         Decimal  @db.Decimal(12, 3)
+  unitPrice   Decimal  @db.Decimal(12, 2)
+  lineTotal   Decimal  @db.Decimal(12, 2)
+  unitCost    Decimal  @default(0) @db.Decimal(12, 4) // COGS per unit at time of sale
+  costTotal   Decimal  @default(0) @db.Decimal(12, 2)
+  sortOrder   Int      @default(0)
+}
+
+model CustomerPayment {
+  id            Int           @id @default(autoincrement())
+  invoiceId     Int
+  invoice       Invoice       @relation(fields: [invoiceId], references: [id])
+  customerId    Int?
+  customer      Customer?     @relation(fields: [customerId], references: [id])
+  date          DateTime      @default(now())
+  amount        Decimal       @db.Decimal(12, 2) // money received
+  discountTaken Decimal       @default(0) @db.Decimal(12, 2) // early-pay discount applied
+  method        PaymentMethod
+  reference     String        @default("") // check #, card auth #, last 4
+  notes         String        @default("")
+  createdBy     String        @default("")
+  createdAt     DateTime      @default(now())
+}
+
+enum PaymentMethod {
+  CASH
+  CREDIT
+  DEBIT
+  CHECK
+  OTHER
+}
+
+model InvoiceAdjustment {
+  id        Int            @id @default(autoincrement())
+  invoiceId Int
+  invoice   Invoice        @relation(fields: [invoiceId], references: [id])
+  type      AdjustmentType
+  amount    Decimal        @db.Decimal(12, 2)
+  note      String         @default("")
+  createdBy String         @default("")
+  createdAt DateTime       @default(now())
+}
+
+enum AdjustmentType {
+  LATE_FEE
+  WRITE_OFF
+}
+
+// -----------------------------------------------------------------------------
+// 5. PURCHASING / ACCOUNTS PAYABLE
+// -----------------------------------------------------------------------------
+
+model PurchaseOrder {
+  id           Int        @id @default(autoincrement())
+  poNo         String     @unique
+  supplierId   Int
+  supplier     Supplier   @relation(fields: [supplierId], references: [id])
+  orderDate    DateTime   @default(now())
+  expectedDate DateTime?
+  status       PoStatus   @default(DRAFT)
+  notes        String     @default("")
+  subtotal     Decimal    @default(0) @db.Decimal(12, 2)
+  createdBy    String     @default("")
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  lines PurchaseOrderLine[]
+  bills SupplierBill[]
+}
+
+enum PoStatus {
+  DRAFT
+  ORDERED
+  RECEIVED
+  CANCELLED
+}
+
+model PurchaseOrderLine {
+  id              Int           @id @default(autoincrement())
+  purchaseOrderId Int
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId       Int
+  product         Product       @relation(fields: [productId], references: [id])
+  qty             Decimal       @db.Decimal(12, 3)
+  listPrice       Decimal       @db.Decimal(12, 2) // price in, before discount
+  discountPct     Decimal       @default(0) @db.Decimal(5, 2) // supplier discount on this line
+  unitCost        Decimal       @db.Decimal(12, 4) // net cost per unit
+  lineTotal       Decimal       @db.Decimal(12, 2)
+  qtyReceived     Decimal       @default(0) @db.Decimal(12, 3)
+}
+
+/// A bill (invoice) a supplier sent us. This is what sits in Accounts Payable.
+model SupplierBill {
+  id              Int            @id @default(autoincrement())
+  billNo          String // the supplier's invoice number
+  supplierId      Int
+  supplier        Supplier       @relation(fields: [supplierId], references: [id])
+  purchaseOrderId Int?
+  purchaseOrder   PurchaseOrder? @relation(fields: [purchaseOrderId], references: [id])
+
+  billDate  DateTime @default(now())
+  termsDays Int      @default(30)
+  dueDate   DateTime
+
+  /// Account debited: "1200" Inventory for stock, or an expense account
+  /// (rent, utilities...) for non-inventory bills.
+  expenseAccountCode String @default("1200")
+
+  subtotal       Decimal @db.Decimal(12, 2)
+  freight        Decimal @default(0) @db.Decimal(12, 2)
+  taxAmount      Decimal @default(0) @db.Decimal(12, 2)
+  total          Decimal @db.Decimal(12, 2)
+  tradeDiscount  Decimal @default(0) @db.Decimal(12, 2) // discount already taken off list
+
+  earlyPayDiscountPct  Decimal @default(0) @db.Decimal(5, 2)
+  earlyPayDiscountDays Int     @default(0)
+
+  amountPaid     Decimal @default(0) @db.Decimal(12, 2)
+  discountsTaken Decimal @default(0) @db.Decimal(12, 2)
+  lateFees       Decimal @default(0) @db.Decimal(12, 2)
+
+  status    BillStatus @default(OPEN)
+  notes     String     @default("")
+  createdBy String     @default("")
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  lines       SupplierBillLine[]
+  payments    SupplierPayment[]
+  adjustments BillAdjustment[]
+
+  @@unique([supplierId, billNo])
+  @@index([status, dueDate])
+}
+
+enum BillStatus {
+  OPEN
+  PARTIAL
+  PAID
+  VOID
+}
+
+model SupplierBillLine {
+  id          Int          @id @default(autoincrement())
+  billId      Int
+  bill        SupplierBill @relation(fields: [billId], references: [id], onDelete: Cascade)
+  productId   Int?
+  itemCode    String       @default("")
+  description String       @default("")
+  qty         Decimal      @db.Decimal(12, 3)
+  listPrice   Decimal      @default(0) @db.Decimal(12, 2)
+  discountPct Decimal      @default(0) @db.Decimal(5, 2)
+  unitCost    Decimal      @db.Decimal(12, 4)
+  lineTotal   Decimal      @db.Decimal(12, 2)
+}
+
+model SupplierPayment {
+  id            Int           @id @default(autoincrement())
+  billId        Int
+  bill          SupplierBill  @relation(fields: [billId], references: [id])
+  supplierId    Int
+  supplier      Supplier      @relation(fields: [supplierId], references: [id])
+  date          DateTime      @default(now())
+  amount        Decimal       @db.Decimal(12, 2)
+  discountTaken Decimal       @default(0) @db.Decimal(12, 2)
+  method        PaymentMethod
+  reference     String        @default("")
+  notes         String        @default("")
+  createdBy     String        @default("")
+  createdAt     DateTime      @default(now())
+}
+
+model BillAdjustment {
+  id        Int            @id @default(autoincrement())
+  billId    Int
+  bill      SupplierBill   @relation(fields: [billId], references: [id])
+  type      AdjustmentType // LATE_FEE only for bills
+  amount    Decimal        @db.Decimal(12, 2)
+  note      String         @default("")
+  createdBy String         @default("")
+  createdAt DateTime       @default(now())
+}
+
+// -----------------------------------------------------------------------------
+// 6. ACCOUNTING  (double-entry: every entry's debits = credits)
+// -----------------------------------------------------------------------------
+
+model Account {
+  code   String      @id // "1000"
+  name   String
+  type   AccountType
+  /// Shown under "current" assets/liabilities on the balance sheet.
+  isCurrent Boolean  @default(true)
+  lines  JournalLine[]
+}
+
+enum AccountType {
+  ASSET
+  LIABILITY
+  EQUITY
+  REVENUE
+  CONTRA_REVENUE
+  COGS
+  EXPENSE
+}
+
+model JournalEntry {
+  id        Int           @id @default(autoincrement())
+  date      DateTime      @default(now())
+  memo      String
+  sourceType String       // "INVOICE", "CUSTOMER_PAYMENT", "BILL", "PAYROLL" ...
+  sourceRef  String       @default("") // "INV-1001"
+  createdBy String        @default("")
+  createdAt DateTime      @default(now())
+  lines     JournalLine[]
+
+  @@index([date])
+  @@index([sourceType, sourceRef])
+}
+
+model JournalLine {
+  id          Int          @id @default(autoincrement())
+  entryId     Int
+  entry       JournalEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  accountCode String
+  account     Account      @relation(fields: [accountCode], references: [code])
+  debit       Decimal      @default(0) @db.Decimal(12, 2)
+  credit      Decimal      @default(0) @db.Decimal(12, 2)
+
+  @@index([accountCode])
+}
+
+// -----------------------------------------------------------------------------
+// 7. PAYROLL
+// -----------------------------------------------------------------------------
+
+model Employee {
+  id           Int          @id @default(autoincrement())
+  name         String
+  title        String       @default("")
+  email        String       @default("")
+  phone        String       @default("")
+  payType      PayType      @default(HOURLY)
+  payRate      Decimal      @db.Decimal(12, 2) // per hour, or per year for salary
+  payFrequency PayFrequency @default(BIWEEKLY)
+  hireDate     DateTime?
+  active       Boolean      @default(true)
+  notes        String       @default("")
+  createdAt    DateTime     @default(now())
+  paychecks    Paycheck[]
+}
+
+enum PayType {
+  HOURLY
+  SALARY
+}
+
+enum PayFrequency {
+  WEEKLY
+  BIWEEKLY
+  SEMIMONTHLY
+  MONTHLY
+}
+
+model PayrollRun {
+  id          Int           @id @default(autoincrement())
+  periodStart DateTime
+  periodEnd   DateTime
+  payDate     DateTime
+  status      PayrollStatus @default(DRAFT)
+  totalGross  Decimal       @default(0) @db.Decimal(12, 2)
+  totalNet    Decimal       @default(0) @db.Decimal(12, 2)
+  totalEmployerTax Decimal  @default(0) @db.Decimal(12, 2)
+  notes       String        @default("")
+  createdAt   DateTime      @default(now())
+  paychecks   Paycheck[]
+}
+
+enum PayrollStatus {
+  DRAFT
+  POSTED
+}
+
+model Paycheck {
+  id            Int        @id @default(autoincrement())
+  runId         Int
+  run           PayrollRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  employeeId    Int
+  employee      Employee   @relation(fields: [employeeId], references: [id])
+  regularHours  Decimal    @default(0) @db.Decimal(8, 2)
+  overtimeHours Decimal    @default(0) @db.Decimal(8, 2)
+  grossPay      Decimal    @db.Decimal(12, 2)
+  // Withholdings are ENTERED (from your payroll provider / tax tables)
+  federalTax    Decimal    @default(0) @db.Decimal(12, 2)
+  stateTax      Decimal    @default(0) @db.Decimal(12, 2)
+  socialSecurity Decimal   @default(0) @db.Decimal(12, 2) // employee share
+  medicare      Decimal    @default(0) @db.Decimal(12, 2) // employee share
+  otherDeductions Decimal  @default(0) @db.Decimal(12, 2)
+  netPay        Decimal    @db.Decimal(12, 2)
+  employerTaxes Decimal    @default(0) @db.Decimal(12, 2) // employer SS + Medicare + unemployment
+}
+
+// -----------------------------------------------------------------------------
+// 8. HISTORY
+// -----------------------------------------------------------------------------
+
+/// Everything that happens is written here and shown on the History tab.
+model ActivityLog {
+  id         Int      @id @default(autoincrement())
+  entityType String // "Product", "Invoice", "Estimate", "Customer", "Supplier", "Bill", "Payroll", "Settings"
+  entityId   Int?
+  entityRef  String   @default("") // human readable: "INV-1001", "W0930"
+  action     String // "CREATED", "UPDATED", "PAYMENT", "APPROVED" ...
+  summary    String
+  details    Json?
+  amount     Decimal? @db.Decimal(12, 2)
+  userName   String   @default("")
+  createdAt  DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([entityType, entityId])
+}
 
 model Archive {
   id        Int      @id @default(autoincrement())
-  entity    String // "Product", "Order", etc.
+  entity    String
   entityId  Int
   data      Json
   createdAt DateTime @default(now())
 }
-
-

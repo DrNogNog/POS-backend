@@ -1,81 +1,136 @@
-import { Router } from 'express';
-import type { Request, Response } from 'express';
-import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcryptjs';
-import jwt from 'jsonwebtoken';
+// Login, store list, and user management (owner only).
+import { Router } from "express";
+import bcrypt from "bcryptjs";
+import { z } from "zod";
+import { env } from "../config/env.js";
+import { allow, requireAuth, selectStore, signToken } from "../middleware/auth.js";
+import { badRequest, idParam, parse, route } from "../lib/http.js";
+import { logActivity } from "../lib/history.js";
 
-export type RegisterRequest = {
-  name: string;
-  email: string;
-  password: string;
-};
+const router = Router();
 
-export type LoginRequest = {
-  email: string;
-  password: string;
-};
+/** Public: which stores exist (for the store picker on the login screen). */
+router.get("/stores", (_req, res) => {
+  res.json(env.stores.map((s) => ({ id: s.id, name: s.name })));
+});
 
-export default function(prisma: PrismaClient) {
-  const router = Router();
-  const JWT_SECRET = process.env.JWT_SECRET || 'supersecret'; // replace with env variable
+const loginSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  password: z.string().min(1),
+});
 
-  // POST /auth/register
-  router.post('/register', async (req: Request<any, any, RegisterRequest>, res: Response) => {
-    try {
-      const { name, email, password } = req.body;
+router.post(
+  "/login",
+  selectStore,
+  route(async (req, res) => {
+    const { email, password } = parse(loginSchema, req.body);
+    const user = await req.db.user.findUnique({ where: { email } });
+    const ok = user && user.active && (await bcrypt.compare(password, user.password));
+    if (!ok) return res.status(401).json({ error: "Wrong email or password for this store." });
+    res.json({
+      token: signToken(user.email),
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      store: { id: req.storeId, name: env.stores.find((s) => s.id === req.storeId)?.name },
+    });
+  })
+);
 
-      // check if user exists
-      const existingUser = await prisma.user.findUnique({ where: { email } });
-      if (existingUser) {
-        return res.status(400).json({ error: 'Email already registered' });
-      }
+router.get("/me", selectStore, requireAuth, (req, res) => {
+  res.json({
+    user: req.user,
+    store: { id: req.storeId, name: env.stores.find((s) => s.id === req.storeId)?.name },
+  });
+});
 
-      // hash password
-      const hashedPassword = await bcrypt.hash(password, 10);
+// ---- Users (per store) ----------------------------------------------------
+const roles = z.enum(["OWNER", "MANAGER", "ACCOUNTANT", "CASHIER"]);
+const userSchema = z.object({
+  email: z.string().trim().toLowerCase().email(),
+  name: z.string().trim().min(1),
+  role: roles,
+  password: z.string().min(8, "Password must be at least 8 characters").optional(),
+  active: z.boolean().optional(),
+});
 
-      const user = await prisma.user.create({
+router.get(
+  "/users",
+  selectStore,
+  requireAuth,
+  allow(),
+  route(async (req, res) => {
+    const users = await req.db.user.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, email: true, name: true, role: true, active: true, createdAt: true },
+    });
+    res.json(users);
+  })
+);
+
+router.post(
+  "/users",
+  selectStore,
+  requireAuth,
+  allow(),
+  route(async (req, res) => {
+    const input = parse(userSchema, req.body);
+    if (!input.password) throw badRequest("Password is required for a new user");
+    const user = await req.db.$transaction(async (tx) => {
+      const created = await tx.user.create({
         data: {
-            email,
-            password: hashedPassword,
-            name: name ?? null, // optional
-            role: 'cashier'     // assign a default role
-        }
+          email: input.email,
+          name: input.name,
+          role: input.role,
+          password: await bcrypt.hash(input.password!, 12),
+        },
+        select: { id: true, email: true, name: true, role: true, active: true },
       });
+      await logActivity(tx, {
+        entityType: "User",
+        entityId: created.id,
+        entityRef: created.email,
+        action: "CREATED",
+        summary: `User ${created.name} (${created.role}) added`,
+        userName: req.user.name,
+      });
+      return created;
+    });
+    res.status(201).json(user);
+  })
+);
 
+router.put(
+  "/users/:id",
+  selectStore,
+  requireAuth,
+  allow(),
+  route(async (req, res) => {
+    const id = idParam(req);
+    const input = parse(userSchema.partial(), req.body);
+    if (id === req.user.id && input.active === false) throw badRequest("You can't deactivate yourself");
+    const user = await req.db.$transaction(async (tx) => {
+      const updated = await tx.user.update({
+        where: { id },
+        data: {
+          ...(input.email ? { email: input.email } : {}),
+          ...(input.name ? { name: input.name } : {}),
+          ...(input.role ? { role: input.role } : {}),
+          ...(input.active !== undefined ? { active: input.active } : {}),
+          ...(input.password ? { password: await bcrypt.hash(input.password, 12) } : {}),
+        },
+        select: { id: true, email: true, name: true, role: true, active: true },
+      });
+      await logActivity(tx, {
+        entityType: "User",
+        entityId: id,
+        entityRef: updated.email,
+        action: "UPDATED",
+        summary: `User ${updated.name} updated${input.password ? " (password changed)" : ""}`,
+        userName: req.user.name,
+      });
+      return updated;
+    });
+    res.json(user);
+  })
+);
 
-      // return user (omit password)
-      const { password: _, ...userSafe } = user;
-      res.status(201).json(userSafe);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'failed to register user' });
-    }
-  });
-
-  // POST /auth/login
-  router.post('/login', async (req: Request<any, any, LoginRequest>, res: Response) => {
-    try {
-      const { email, password } = req.body;
-
-      const user = await prisma.user.findUnique({ where: { email } });
-      if (!user) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      const passwordMatch = await bcrypt.compare(password, user.password);
-      if (!passwordMatch) {
-        return res.status(401).json({ error: 'Invalid credentials' });
-      }
-
-      // generate JWT
-      const token = jwt.sign({ userId: user.id, email: user.email }, JWT_SECRET, { expiresIn: '8h' });
-
-      res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: 'failed to login' });
-    }
-  });
-
-  return router;
-}
+export default router;

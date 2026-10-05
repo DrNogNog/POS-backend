@@ -1,43 +1,43 @@
 {
   "name": "pos-backend",
-  "version": "1.0.0",
-  "description": "",
-  "main": "dist/server.js",
+  "version": "2.0.0",
+  "private": true,
+  "description": "POS API: sales, A/R, A/P, inventory costing, payroll \u2014 one database per store",
   "type": "module",
   "scripts": {
-    "dev": "tsx src/server.ts",
-    "start": "node dist/server.js",
-    "build": "tsc"
+    "dev": "tsx watch src/server.ts",
+    "start": "tsx src/server.ts",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/domain.test.ts",
+    "db:new-migration": "prisma migrate dev",
+    "db:migrate": "tsx scripts/migrate-all.ts",
+    "db:generate": "prisma generate",
+    "seed": "tsx scripts/seed.ts",
+    "import:pricelist": "tsx scripts/import-pricelist.ts",
+    "test:prepare": "tsx scripts/test-prepare.ts",
+    "test:e2e": "tsx --test tests/integration.test.ts"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "bcrypt": "^6.0.0",
+    "@prisma/client": "^6.18.0",
     "bcryptjs": "^3.0.3",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",
-    "express-session": "^1.18.2",
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.0.2",
     "pdf-lib": "^1.17.1",
-    "pg": "^8.16.3",
-    "socket.io": "^4.8.1",
     "zod": "^4.1.13"
   },
   "devDependencies": {
-    "@prisma/client": "^6.18.0",
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.5",
-    "@types/express-session": "^1.18.2",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/multer": "^2.0.0",
     "@types/node": "^24.10.1",
     "prisma": "^6.18.0",
-    "ts-node-dev": "^2.0.0",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "pg": "^8.16.3"
   }
 }

@@ -1,28 +1,17 @@
 {
   "compilerOptions": {
-    "rootDir": "src",
-    "outDir": "dist",
     "module": "nodenext",
     "moduleResolution": "nodenext",
     "target": "ES2022",
-    "lib": ["ESNext"],
+    "lib": ["ES2023"],
     "types": ["node"],
-    "sourceMap": true,
-    "declaration": true,
-    "declarationMap": true,
     "strict": true,
     "esModuleInterop": true,
-    "allowSyntheticDefaultImports": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "isolatedModules": true,
-    "allowImportingTsExtensions": true,
-    "noEmit": true,
-    "baseUrl": "src",
-    "paths": {
-      "@/*": ["*"]
-    }
+    "noEmit": true
   },
-  "include": ["src"],
-  "exclude": ["node_modules", "dist"]
+  "include": ["src", "scripts", "tests"],
+  "exclude": ["node_modules"]
 }

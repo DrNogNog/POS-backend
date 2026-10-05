@@ -1,487 +1,420 @@
+// Inventory / products: search, details (cost layers & movements), create,
+// edit, stock adjustments, images, and bulk price-list import.
 import { Router } from "express";
-import type { Request, Response } from "express";
-import multer from "multer";
-import path from "path";
 import fs from "fs";
-import { PrismaClient, Prisma } from "@prisma/client";
+import path from "path";
+import multer from "multer";
+import { z } from "zod";
+import type { Prisma } from "@prisma/client";
+import { allow } from "../middleware/auth.js";
+import { badRequest, idParam, notFound, parse, route, onlySent } from "../lib/http.js";
+import { diffFields, logActivity } from "../lib/history.js";
+import { num, round2 } from "../lib/money.js";
+import { netCost, sellingPrice, marginPct } from "../domain/pricing.js";
+import { weightedAverageCost, inventoryValue } from "../domain/costing.js";
+import { decodeItemCode } from "../domain/itemCodes.js";
+import { adjustStock, receiveStock } from "../services/inventory.js";
+import { postEntry } from "../services/journal.js";
+import { inventoryAdjustmentEntry } from "../domain/accounts.js";
+import { getSettings } from "../services/settings.js";
+import { orderBy, pageParams } from "./_shared.js";
 
-// -----------------------------
-// Logging helper
-// -----------------------------
-const createLogHelper = (prisma: PrismaClient) => async (
-  productId: number,
-  action: "CREATE OR DUPLICATE" | "UPDATE" | "DELETE",
-  changes?: Record<string, any>
-) => {
-  try {
-    await prisma.productChangeLog.create({
-      data: { productId, action, changes },
-    });
-  } catch (err) {
-    console.error("Failed to log product change:", err);
-  }
-};
+const router = Router();
 
-// -----------------------------
-// Utility helpers
-// -----------------------------
-const toNumberSafe = (v: any, fallback = 0) => {
-  if (v === undefined || v === null || v === "") return fallback;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : fallback;
-};
-
-const normalizeVendors = (vendors: any): string[] => {
-  if (!vendors) return [];
-  if (Array.isArray(vendors)) return vendors.map((v) => String(v).trim()).filter(Boolean);
-  return String(vendors)
-    .split(",")
-    .map((v) => v.trim())
-    .filter(Boolean);
-};
-
-// -----------------------------
-// Products router
-// -----------------------------
-export default function productsRoutes(prisma: PrismaClient) {
-  const router = Router();
-  const logProductChange = createLogHelper(prisma);
-
-  // Ensure uploads folder exists
-  const uploadDir = path.join(process.cwd(), "uploads");
-  if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir, { recursive: true });
-
-  // Multer storage config
-  const storage = multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, uploadDir),
+// ---- Image uploads --------------------------------------------------------
+export const UPLOAD_DIR = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
     filename: (_req, file, cb) => {
-      const timestamp = Date.now();
-      const ext = path.extname(file.originalname);
-      const name = path
-        .basename(file.originalname, ext)
-        .replace(/\s+/g, "_")
-        .replace(/[^a-zA-Z0-9_-]/g, "");
-      cb(null, `${timestamp}-${name}${ext}`);
+      const ext = path.extname(file.originalname).toLowerCase();
+      const base = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+      cb(null, `${Date.now()}-${base}${ext}`);
     },
-  });
-
-  const upload = multer({
-    storage,
-    fileFilter: (_req, file, cb) => {
-      const allowed = ["image/png", "image/jpeg", "image/jpg", "image/webp"];
-      if (allowed.includes(file.mimetype)) cb(null, true);
-      else cb(new Error("Invalid file type"));
-    },
-    limits: { fileSize: 5 * 1024 * 1024 },
-  });
-
-  // GET /products?q=search
-router.get("/", async (req: Request, res: Response) => {
-  try {
-    const page = Number(req.query.page || 1);
-    const limit = Number(req.query.limit || 100);
-    const search = String(req.query.search || "").trim();
-
-    const skip = (page - 1) * limit;
-
-    const where: Prisma.ProductWhereInput = {
-      deletedAt: null,
-      ...(search && {
-        OR: [
-          { name: { contains: search, mode: "insensitive" } },
-          { description: { contains: search, mode: "insensitive" } },
-          { vendors: { hasSome: [search] } },
-        ],
-      }),
-    };
-
-    const [products, total] = await Promise.all([
-      prisma.product.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { name: "asc" },
-      }),
-      prisma.product.count({ where }),
-    ]);
-
-    res.json({ products, total });
-  } catch (err) {
-    console.error("Search error:", err);
-    res.status(500).json({ error: "Failed to fetch products" });
-  }
+  }),
+  fileFilter: (_req, file, cb) =>
+    cb(null, ["image/png", "image/jpeg", "image/webp"].includes(file.mimetype)),
+  limits: { fileSize: 5 * 1024 * 1024 },
 });
 
-
-
-  // GET /products/needToOrder
-  router.get("/needToOrder", async (req: Request, res: Response) => {
-    try {
-      const products = await prisma.product.findMany({
-        where: { needToOrder: { gt: 0 }, deletedAt: null },
-        select: {
-          id: true,
-          name: true,
-          description: true,
-          inputcost: true,
-          stock: true,
-          vendors: true,
-          images: true,
-          needToOrder: true,
-        },
-        orderBy: { needToOrder: "desc" },
-      });
-
-      res.json(products);
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: "Failed to fetch needed products" });
-    }
-  });
-
-  // POST /products
-  router.post("/", upload.array("images"), async (req: Request, res: Response) => {
-    try {
-      const { name } = req.body;
-      if (!name) return res.status(400).json({ error: "Name is required" });
-
-      const files = req.files as Express.Multer.File[] | undefined;
-      const images = files?.map((f) => f.filename) || [];
-      const product = await prisma.product.create({
-        data: {
-          name: String(req.body.name || ""),
-          inputcost: toNumberSafe(req.body.inputcost, 0),
-          description: String(req.body.description || ""),
-          stock: toNumberSafe(req.body.stock, 0),
-          vendors: normalizeVendors(req.body.vendors),
-          images,
-          needToOrder: toNumberSafe(req.body.needToOrder ?? 0, 0),
-        },
-      });
-
-      await logProductChange(product.id, "CREATE OR DUPLICATE", { ...product });
-      res.json(product);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to create product" });
-    }
-  });
-
-  // POST /products/duplicate
-  router.post("/duplicate", async (req: Request, res: Response) => {
-    try {
-      const data = req.body;
-      const product = await prisma.product.create({
-        data: {
-          name: String(data.name || ""),
-          inputcost: toNumberSafe(data.inputcost, 0),
-          description: String(data.description || ""),
-          stock: toNumberSafe(data.stock, 0),
-          vendors: normalizeVendors(data.vendors),
-          images: data.images || [],
-          needToOrder: 0,
-        },
-      });
-
-      await logProductChange(product.id, "CREATE OR DUPLICATE", { ...product });
-      res.json(product);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to duplicate product" });
-    }
-  });
-
-  // PUT /products/:id
-  function normalizeArrayField(value: any): string[] | undefined {
-    if (!value) return undefined;
-    if (Array.isArray(value)) return value;
-    return value.split(",").map((s: string) => s.trim());
-  }
-
-  router.put("/:id", upload.array("images"), async (req: Request, res: Response) => {
-    try {
-      const id = Number(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-
-      const files = req.files as Express.Multer.File[] | undefined;
-      const uploadedImages = files?.map((f) => f.filename) || [];
-
-      const oldProduct = await prisma.product.findUnique({ where: { id } });
-      if (!oldProduct) return res.status(404).json({ error: "Product not found" });
-
-      const finalImages =
-        uploadedImages.length > 0 ? [...(oldProduct.images || []), ...uploadedImages] : undefined;
-
-      let data: Prisma.ProductUpdateInput = {
-        name: req.body.name ?? undefined,
-        description: req.body.description ?? undefined,
-        inputcost: req.body.inputcost !== undefined ? toNumberSafe(req.body.inputcost) : undefined,
-        stock: req.body.stock !== undefined ? toNumberSafe(req.body.stock) : undefined,
-        vendors: normalizeArrayField(req.body.vendors),
-        images: finalImages,
-      };
-
-      Object.keys(data).forEach((k) => {
-        if ((data as any)[k] === undefined) delete (data as any)[k];
-      });
-
-      const updatedProduct = await prisma.product.update({ where: { id }, data });
-
-      const changes: Record<string, any> = {};
-      for (const key of Object.keys(updatedProduct)) {
-        if ((updatedProduct as any)[key] !== (oldProduct as any)[key]) {
-          changes[key] = { old: (oldProduct as any)[key], new: (updatedProduct as any)[key] };
-        }
-      }
-
-      await logProductChange(id, "UPDATE", changes);
-      return res.json(updatedProduct);
-    } catch (err) {
-      console.error("Update Error:", err);
-      return res.status(500).json({ error: "Failed to update product" });
-    }
-  });
-
-  // -----------------------------
-  // DELETE /products/:id (soft delete)
-  // -----------------------------
-  router.delete("/:id", async (req: Request, res: Response) => {
-    try {
-      const id = Number(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-
-      const product = await prisma.product.findUnique({ where: { id } });
-      if (!product) return res.status(404).json({ error: "Product not found" });
-
-      await prisma.product.update({
-        where: { id },
-        data: { deletedAt: new Date() },
-      });
-
-      await logProductChange(product.id, "DELETE", {});
-
-      res.json({ message: "Product marked as deleted" });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to delete product" });
-    }
-  });
-
-  // -----------------------------
-  // PATCH /products/decrement-stock
-  // -----------------------------
-router.patch("/decrement-stock", async (req: Request, res: Response) => {
-  const items = req.body.items;
-  if (!Array.isArray(items) || items.length === 0)
-    return res.status(400).json({ error: "No items provided" });
-
-  try {
-    const results = [];
-    for (const { name, quantity } of items) {
-      if (!name || !quantity) continue;
-
-      const product = await prisma.product.findFirst({
-        where: { 
-          name: name.trim(),    // ← EXACT MATCH + TRIM (this works on SQLite)
-          deletedAt: null 
-        },
-      });
-
-      if (!product) {
-        console.log(`Product not found: "${name}"`);
-        continue;
-      }
-
-      if (product.stock < quantity) {
-        return res.status(400).json({ 
-          error: `Not enough stock for ${name}. Available: ${product.stock}, Requested: ${quantity}` 
-        });
-      }
-
-      const updated = await prisma.product.update({
-        where: { id: product.id },
-        data: { stock: { decrement: quantity } },
-      });
-
-      results.push(updated);
-    }
-
-    if (results.length === 0) {
-      return res.status(400).json({ error: "No products were updated (not found or no stock)" });
-    }
-
-    res.json({ success: true, updated: results });
-  } catch (err: any) {
-    console.error("Decrement stock error:", err);
-    res.status(500).json({ error: err.message || "Stock update failed" });
-  }
+// ---- Validation -------------------------------------------------------------
+const productSchema = z.object({
+  itemCode: z.string().trim().min(1, "Item code is required").max(60).toUpperCase(),
+  name: z.string().trim().min(1, "Name is required"),
+  description: z.string().trim().default(""),
+  categoryId: z.coerce.number().int().positive().optional().nullable(),
+  supplierId: z.coerce.number().int().positive().optional().nullable(),
+  collection: z.string().trim().default(""),
+  unit: z.string().trim().default("each"),
+  listPrice: z.coerce.number().min(0).default(0),
+  supplierDiscountPct: z.coerce.number().min(0).max(100).default(0),
+  unitCost: z.coerce.number().min(0).optional(),
+  sellPriceOverride: z.coerce.number().min(0).optional().nullable(),
+  taxable: z.coerce.boolean().default(true),
+  reorderPoint: z.coerce.number().min(0).default(0),
+  reorderQty: z.coerce.number().min(0).default(0),
+  /** Opening stock when creating a product. */
+  openingQty: z.coerce.number().min(0).optional(),
 });
 
-  // -----------------------------
-  // PATCH /products/increment-stock
-  // -----------------------------
-  router.patch("/increment-stock", async (req: Request, res: Response) => {
-    const { items } = req.body;
-
-    if (!Array.isArray(items) || items.length === 0) {
-      return res.status(400).json({ error: "No items provided" });
+/** Multipart forms send everything as strings; turn "" into undefined. */
+function cleanForm(body: Record<string, unknown>) {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(body ?? {})) {
+    if (v === "" || v === undefined) continue;
+    if (v === "null") {
+      out[k] = null; // explicitly cleared (e.g. no fixed price, no category)
+      continue;
     }
-
-    try {
-      for (const { item, qty } of items) {
-        if (!item) {
-          return res.status(400).json({ error: "Missing product name (item)" });
-        }
-
-        const product = await prisma.product.findFirst({
-          where: { name: String(item).trim() },
-        });
-
-        if (!product) {
-          return res.status(404).json({ error: `Product not found: ${item}` });
-        }
-
-        await prisma.product.update({
-          where: { id: product.id },
-          data: { stock: (product.stock || 0) + Number(qty || 0) },
-        });
-      }
-
-      res.json({ message: "Stock incremented successfully" });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to increment product stock" });
-    }
-  });
-
-  router.get("/search", async (req, res) => {
-  const query = (req.query.query as string)?.trim();
-  if (!query) return res.status(400).json({ error: "Query is required" });
-
-  try {
-    const products = await prisma.product.findMany({
-      where: {
-        OR: [
-          { name: { contains: query, mode: "insensitive" } },
-        ],
-      },
-      take: 10, // limit to top 10 matches
-    });
-    res.json({ products });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
+    out[k] = v === "true" ? true : v === "false" ? false : v;
   }
-});
-
-
-  // -----------------------------
-  // POST /api/products/stock
-  // -----------------------------
-  router.post("/stock", async (req: Request, res: Response) => {
-    try {
-      const { productIds } = req.body;
-      if (!Array.isArray(productIds)) return res.status(400).json({ error: "Invalid productIds" });
-
-      const products = await prisma.product.findMany({
-        where: { id: { in: productIds } },
-        select: { id: true, name: true, stock: true },
-      });
-
-      res.json(products);
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to fetch product stock" });
-    }
-  });
-
-  // -----------------------------
-  // PATCH /api/products/needToOrder/:id
-  // -----------------------------
-  router.patch("/needToOrder/:id", async (req: Request, res: Response) => {
-    const id = Number(req.params.id);
-
-    if (!id || isNaN(id)) {
-      return res.status(400).json({ error: "Invalid product ID" });
-    }
-
-    const { needToOrder } = req.body;
-
-    if (
-      typeof needToOrder !== "number" ||
-      needToOrder < 0 ||
-      !Number.isInteger(needToOrder)
-    ) {
-      return res.status(400).json({ error: "needToOrder must be a positive integer" });
-    }
-
-    try {
-      const updated = await prisma.product.update({
-        where: { id },
-        data: { needToOrder },
-        select: { id: true, name: true, needToOrder: true },
-      });
-
-      return res.json({ success: true, product: updated });
-    } catch (error: any) {
-      console.error("PATCH failed:", error);
-
-      if (error.code === "P2025") {
-        return res.status(404).json({ error: "Product not found" });
-      }
-
-      return res.status(500).json({ error: "Database error" });
-    }
-  });
-  router.patch("/updateImage", upload.single("newImage"), async (req, res) => {
-  const { oldFilename } = req.body;
-  const file = req.file;
-
-  if (!oldFilename || !file) return res.status(400).json({ error: "Old filename or new image missing" });
-
-  try {
-    // Find product containing this image
-    const product = await prisma.product.findFirst({ where: { images: { has: oldFilename } } });
-    if (!product) return res.status(404).json({ error: "Product/image not found" });
-
-    // Replace old filename in images array
-    const updatedImages = product.images.map((img) => (img === oldFilename ? file.filename : img));
-
-    await prisma.product.update({
-      where: { id: product.id },
-      data: { images: updatedImages },
-    });
-
-    // Optionally delete old image from disk
-    const oldPath = path.join(process.cwd(), "uploads", oldFilename);
-    if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath);
-
-    res.json({ src: `http://localhost:4000/uploads/${file.filename}` });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Failed to update image" });
-  }
-});
-
-  // -----------------------------
-  // PATCH /products/billing/:id
-  // -----------------------------
-  router.patch("/billing/:id", async (req: Request, res: Response) => {
-    try {
-      const id = Number(req.params.id);
-      if (isNaN(id)) return res.status(400).json({ error: "Invalid ID" });
-
-      const { billing } = req.body;
-      await prisma.product.update({
-        where: { id },
-        data: { billing },
-      });
-      return res.json({ success: true });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ error: "Failed to update billing" });
-    }
-  });
-
-return router;
+  return out;
 }
+
+// ---- List / search ------------------------------------------------------------
+router.get(
+  "/",
+  route(async (req, res) => {
+    const q = String(req.query.q || "").trim();
+    const where: Prisma.ProductWhereInput = { deletedAt: null };
+    if (q) {
+      where.OR = [
+        { itemCode: { contains: q, mode: "insensitive" } },
+        { name: { contains: q, mode: "insensitive" } },
+        { description: { contains: q, mode: "insensitive" } },
+        { collection: { contains: q, mode: "insensitive" } },
+      ];
+    }
+    if (req.query.categoryId) where.categoryId = Number(req.query.categoryId);
+    if (req.query.supplierId) where.supplierId = Number(req.query.supplierId);
+    if (req.query.collection) where.collection = String(req.query.collection);
+    if (req.query.inStock === "true") where.qtyOnHand = { gt: 0 };
+    const { take, skip, page, limit } = pageParams(req, 50);
+    const sort = orderBy(req, ["itemCode", "name", "qtyOnHand", "unitCost", "listPrice", "updatedAt"] as const, "itemCode", "asc");
+
+    let lowStockIds: number[] | null = null;
+    if (req.query.lowStock === "true") {
+      const rows = await req.db.$queryRaw<{ id: number }[]>`
+        SELECT id FROM "Product" WHERE "deletedAt" IS NULL AND "reorderPoint" > 0 AND "qtyOnHand" <= "reorderPoint"`;
+      lowStockIds = rows.map((r) => r.id);
+      where.id = { in: lowStockIds };
+    }
+
+    const [items, total] = await Promise.all([
+      req.db.product.findMany({
+        where,
+        take,
+        skip,
+        orderBy: sort,
+        include: {
+          category: { select: { id: true, name: true } },
+          supplier: { select: { id: true, name: true } },
+        },
+      }),
+      req.db.product.count({ where }),
+    ]);
+    res.json({ items, total, page, limit });
+  })
+);
+
+/** Products that need ordering (at or below reorder point), grouped by supplier. */
+router.get(
+  "/reorder",
+  route(async (req, res) => {
+    const rows = await req.db.$queryRaw<{ id: number }[]>`
+      SELECT id FROM "Product" WHERE "deletedAt" IS NULL AND "reorderPoint" > 0 AND "qtyOnHand" <= "reorderPoint"`;
+    const products = await req.db.product.findMany({
+      where: { id: { in: rows.map((r) => r.id) } },
+      include: { supplier: { select: { id: true, name: true } } },
+      orderBy: { itemCode: "asc" },
+    });
+    res.json(
+      products.map((p) => ({
+        ...p,
+        suggestedQty: Math.max(num(p.reorderQty), num(p.reorderPoint) - num(p.qtyOnHand) + 1),
+      }))
+    );
+  })
+);
+
+router.get(
+  "/collections",
+  route(async (req, res) => {
+    const rows = await req.db.product.groupBy({
+      by: ["collection"],
+      where: { deletedAt: null, collection: { not: "" } },
+      _count: true,
+      orderBy: { collection: "asc" },
+    });
+    res.json(rows.map((r) => ({ name: r.collection, count: r._count })));
+  })
+);
+
+router.get(
+  "/:id",
+  route(async (req, res) => {
+    const id = idParam(req);
+    const product = await req.db.product.findUnique({
+      where: { id },
+      include: {
+        category: true,
+        supplier: true,
+        lots: { where: { qtyRemaining: { gt: 0 } }, orderBy: { receivedAt: "asc" } },
+        movements: { orderBy: { createdAt: "desc" }, take: 100 },
+      },
+    });
+    if (!product) throw notFound("Product");
+    const tiers = await req.db.priceTier.findMany({ orderBy: { sortOrder: "asc" } });
+    const lots = product.lots.map((l) => ({
+      id: l.id,
+      receivedAt: l.receivedAt,
+      qtyRemaining: num(l.qtyRemaining),
+      unitCost: num(l.unitCost),
+    }));
+    const unitCost = num(product.unitCost);
+    const override = product.sellPriceOverride === null ? null : num(product.sellPriceOverride);
+    res.json({
+      ...product,
+      decoded: decodeItemCode(product.itemCode),
+      weightedAverageCost: weightedAverageCost(lots),
+      stockValue: inventoryValue(lots),
+      prices: tiers.map((t) => {
+        const price = sellingPrice({ unitCost, sellPriceOverride: override }, num(t.markupPct));
+        return { tier: t.code, name: t.name, markupPct: num(t.markupPct), price, marginPct: marginPct(price, unitCost) };
+      }),
+    });
+  })
+);
+
+// ---- Create / update ----------------------------------------------------------
+router.post(
+  "/",
+  allow("MANAGER"),
+  upload.array("images", 8),
+  route(async (req, res) => {
+    const input = parse(productSchema, cleanForm(req.body));
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const settings = await getSettings(req.db);
+    const unitCost = input.unitCost ?? netCost(input.listPrice, input.supplierDiscountPct);
+    const { openingQty, ...data } = input;
+    const product = await req.db.$transaction(async (tx) => {
+      const p = await tx.product.create({
+        data: { ...data, unitCost, images: files.map((f) => f.filename) },
+      });
+      await logActivity(tx, {
+        entityType: "Product",
+        entityId: p.id,
+        entityRef: p.itemCode,
+        action: "CREATED",
+        summary: `Product ${p.itemCode} — ${p.name} added (cost $${num(p.unitCost).toFixed(2)})`,
+        userName: req.user.name,
+      });
+      if (openingQty && openingQty > 0) {
+        await adjustStock(tx, {
+          productId: p.id,
+          qtyChange: openingQty,
+          unitCost,
+          reason: "Opening stock",
+          method: settings.costingMethod,
+          userName: req.user.name,
+        });
+      }
+      return p;
+    });
+    res.status(201).json(product);
+  })
+);
+
+router.put(
+  "/:id",
+  allow("MANAGER"),
+  upload.array("images", 8),
+  route(async (req, res) => {
+    const id = idParam(req);
+    const form = cleanForm(req.body);
+    const input = onlySent(parse(productSchema.partial(), form), form);
+    delete input.openingQty;
+    const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+    const removeImages = String(req.body.removeImages || "").split(",").filter(Boolean);
+    const product = await req.db.$transaction(async (tx) => {
+      const before = await tx.product.findUnique({ where: { id } });
+      if (!before) throw notFound("Product");
+      const images = [...before.images.filter((i) => !removeImages.includes(i)), ...files.map((f) => f.filename)];
+      // If list price or discount changed but cost wasn't typed, recompute cost.
+      const data: Prisma.ProductUpdateInput = { ...input, images };
+      if (input.unitCost === undefined && (input.listPrice !== undefined || input.supplierDiscountPct !== undefined)) {
+        data.unitCost = netCost(
+          input.listPrice ?? num(before.listPrice),
+          input.supplierDiscountPct ?? num(before.supplierDiscountPct)
+        );
+      }
+      if (input.categoryId !== undefined) {
+        delete (data as Record<string, unknown>).categoryId;
+        data.category = input.categoryId ? { connect: { id: input.categoryId } } : { disconnect: true };
+      }
+      if (input.supplierId !== undefined) {
+        delete (data as Record<string, unknown>).supplierId;
+        data.supplier = input.supplierId ? { connect: { id: input.supplierId } } : { disconnect: true };
+      }
+      const after = await tx.product.update({ where: { id }, data });
+      const changes = diffFields(before as never, after as never);
+      if (Object.keys(changes).length) {
+        await logActivity(tx, {
+          entityType: "Product",
+          entityId: id,
+          entityRef: after.itemCode,
+          action: "UPDATED",
+          summary: `Product ${after.itemCode} updated: ${Object.keys(changes).join(", ")}`,
+          details: JSON.parse(JSON.stringify(changes)),
+          userName: req.user.name,
+        });
+      }
+      return after;
+    });
+    res.json(product);
+  })
+);
+
+router.delete(
+  "/:id",
+  allow("MANAGER"),
+  route(async (req, res) => {
+    const id = idParam(req);
+    await req.db.$transaction(async (tx) => {
+      const p = await tx.product.update({ where: { id }, data: { deletedAt: new Date() } });
+      await tx.archive.create({ data: { entity: "Product", entityId: id, data: JSON.parse(JSON.stringify(p)) } });
+      await logActivity(tx, {
+        entityType: "Product",
+        entityId: id,
+        entityRef: p.itemCode,
+        action: "ARCHIVED",
+        summary: `Product ${p.itemCode} archived`,
+        userName: req.user.name,
+      });
+    });
+    res.json({ ok: true });
+  })
+);
+
+// ---- Stock -------------------------------------------------------------------
+const adjustSchema = z.object({
+  qtyChange: z.coerce.number().refine((n) => n !== 0, "Quantity change cannot be zero"),
+  unitCost: z.coerce.number().min(0).optional(),
+  reason: z.string().trim().min(1, "Give a reason (count, damage, opening stock...)"),
+});
+
+router.post(
+  "/:id/adjust",
+  allow("MANAGER"),
+  route(async (req, res) => {
+    const id = idParam(req);
+    const input = parse(adjustSchema, req.body);
+    const settings = await getSettings(req.db);
+    const result = await req.db.$transaction((tx) =>
+      adjustStock(tx, { productId: id, ...input, method: settings.costingMethod, userName: req.user.name })
+    );
+    res.json(result);
+  })
+);
+
+// ---- Bulk import (price list) ------------------------------------------------------
+const importRow = z.object({
+  itemCode: z.string().trim().min(1).max(60).toUpperCase(),
+  name: z.string().trim().min(1),
+  description: z.string().trim().default(""),
+  category: z.string().trim().default(""),
+  collection: z.string().trim().default(""),
+  supplier: z.string().trim().default(""),
+  listPrice: z.coerce.number().min(0).default(0),
+  supplierDiscountPct: z.coerce.number().min(0).max(100).default(0),
+  unitCost: z.coerce.number().min(0).optional(),
+  unit: z.string().trim().default("each"),
+  qtyOnHand: z.coerce.number().min(0).optional(),
+});
+
+router.post(
+  "/import",
+  allow("MANAGER"),
+  route(async (req, res) => {
+    const rows = parse(z.array(importRow).max(10000), req.body?.rows);
+    if (rows.length === 0) throw badRequest("No rows to import");
+    const settings = await getSettings(req.db);
+    let created = 0;
+    let updated = 0;
+    let openingValue = 0;
+    // Look up / create categories and suppliers once
+    const categories = new Map((await req.db.category.findMany()).map((c) => [c.name.toLowerCase(), c.id]));
+    const suppliers = new Map((await req.db.supplier.findMany()).map((s) => [s.name.toLowerCase(), s.id]));
+    for (const r of rows) {
+      if (r.category && !categories.has(r.category.toLowerCase())) {
+        const c = await req.db.category.create({ data: { name: r.category, sortOrder: categories.size + 1 } });
+        categories.set(c.name.toLowerCase(), c.id);
+      }
+      if (r.supplier && !suppliers.has(r.supplier.toLowerCase())) {
+        const s = await req.db.supplier.create({ data: { name: r.supplier } });
+        suppliers.set(s.name.toLowerCase(), s.id);
+      }
+    }
+    // Chunked so a big price list doesn't hold one giant transaction
+    for (let i = 0; i < rows.length; i += 200) {
+      const chunk = rows.slice(i, i + 200);
+      await req.db.$transaction(async (tx) => {
+        for (const r of chunk) {
+          const unitCost = r.unitCost ?? netCost(r.listPrice, r.supplierDiscountPct);
+          const data = {
+            name: r.name,
+            description: r.description,
+            collection: r.collection,
+            unit: r.unit,
+            listPrice: r.listPrice,
+            supplierDiscountPct: r.supplierDiscountPct,
+            unitCost,
+            categoryId: r.category ? categories.get(r.category.toLowerCase()) ?? null : null,
+            supplierId: r.supplier ? suppliers.get(r.supplier.toLowerCase()) ?? null : null,
+          };
+          const existing = await tx.product.findUnique({ where: { itemCode: r.itemCode } });
+          if (existing) {
+            await tx.product.update({ where: { id: existing.id }, data: { ...data, deletedAt: null } });
+            updated++;
+          } else {
+            const p = await tx.product.create({ data: { itemCode: r.itemCode, ...data } });
+            created++;
+            if (r.qtyOnHand && r.qtyOnHand > 0) {
+              openingValue = round2(openingValue + r.qtyOnHand * unitCost);
+              await receiveStock(tx, {
+                productId: p.id,
+                qty: r.qtyOnHand,
+                unitCost,
+                source: "OPENING",
+                sourceRef: "IMPORT",
+              });
+            }
+          }
+        }
+      }, { timeout: 120000 });
+    }
+    // Opening stock from an import goes to the books in one entry
+    await req.db.$transaction(async (tx) => {
+      if (openingValue > 0) {
+        await postEntry(tx, {
+          memo: "Opening stock from import",
+          sourceType: "INVENTORY_ADJUSTMENT",
+          sourceRef: "IMPORT",
+          userName: req.user.name,
+          lines: inventoryAdjustmentEntry(openingValue),
+        });
+      }
+      await logActivity(tx, {
+        entityType: "Product",
+        action: "IMPORTED",
+        summary: `Imported price list: ${created} new, ${updated} updated (${settings.name})`,
+        amount: openingValue || null,
+        userName: req.user.name,
+      });
+    });
+    res.json({ created, updated });
+  })
+);
+
+export default router;

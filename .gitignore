@@ -1,5 +1,16 @@
 node_modules
-# Keep environment variables out of version control
+dist
+# Secrets and per-machine settings - NEVER commit
 .env
-
+.env.*
+!.env.example
+# Database backups may contain customer data
+/*.sql
+*.dump
+backups/
 /generated/prisma
+# Test build output and generated test files
+.test-build/
+tests/support/dmmf.json
+tests/support/dmmf.prisma
+tests/support/schema.test.prisma
