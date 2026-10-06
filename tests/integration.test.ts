@@ -9,10 +9,10 @@ type Any = any;
 const r2 = (n: number) => Math.round(n * 100) / 100;
 const daysAgo = (n: number) => new Date(Date.now() - n * 86400000).toISOString();
 
-describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_URL_B" }, () => {
+describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
   let api: Awaited<ReturnType<typeof startApi>>;
   let token = "";
-  const call = (m: string, u: string, body?: unknown, store = "A") => api.call(m, u, { body, token, store });
+  const call = (m: string, u: string, body?: unknown) => api.call(m, u, { body, token });
   const ids: Record<string, number> = {};
 
   before(async () => {
@@ -20,7 +20,7 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
   });
   after(async () => api?.stop());
 
-  test("login is required and works per store", async () => {
+  test("login is required", async () => {
     assert.equal((await api.call("GET", "/products")).status, 401);
     const bad = await api.call("POST", "/auth/login", { body: { email: "owner@test.local", password: "nope" } });
     assert.equal(bad.status, 401);
@@ -29,13 +29,14 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
     token = ok.data.token;
     const me = await call("GET", "/auth/me");
     assert.equal(me.data.user.role, "OWNER");
+    // The store is whatever database (drive) the server runs on, named in Settings
+    assert.equal(me.data.store.name, "Test Store");
+    assert.ok(me.data.store.id, "store has an id (from the data directory)");
   });
 
-  test("each store has its own tax rate", async () => {
+  test("seed sets up tax and price levels", async () => {
     const a = await call("GET", "/settings");
-    const b = await call("GET", "/settings", undefined, "B");
     assert.equal(Number(a.data.taxRates.find((t: Any) => t.isDefault).ratePct), 8.875);
-    assert.equal(Number(b.data.taxRates.find((t: Any) => t.isDefault).ratePct), 6.625);
     assert.equal(a.data.priceTiers.map((t: Any) => t.code).join(","), "AA,A,B,C,D");
   });
 
@@ -82,11 +83,6 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
     const sup = await call("PUT", `/suppliers/${ids.supplier}`, { phone: "718-555-0000" });
     assert.equal(sup.data.paymentTermsDays, 30);
     assert.equal(Number(sup.data.tradeDiscountPct), 61);
-  });
-
-  test("store B does not see store A's products", async () => {
-    const b = await call("GET", "/products", undefined, "B");
-    assert.equal(b.data.total, 0);
   });
 
   test("purchase order -> receive -> bill in A/P with landed cost", async () => {
@@ -448,7 +444,10 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL_A / TEST_DB_
     const t = login.data.token;
     assert.equal((await api.call("GET", "/payroll/employees", { token: t })).status, 403);
     assert.equal((await api.call("GET", "/products", { token: t })).status, 200);
-    // Not a user in store B
-    assert.equal((await api.call("GET", "/products", { token: t, store: "B" })).status, 403);
+    // A disabled login is refused
+    const users = await call("GET", "/auth/users");
+    const cashier = users.data.find((u: Any) => u.email === "cash@test.local");
+    await call("PUT", `/auth/users/${cashier.id}`, { active: false });
+    assert.equal((await api.call("GET", "/products", { token: t })).status, 403);
   });
 });

@@ -19,7 +19,7 @@ router.get(
       req.db.account.findMany({ orderBy: { code: "asc" } }),
       req.db.category.findMany({ orderBy: { sortOrder: "asc" } }),
     ]);
-    res.json({ settings, taxRates, priceTiers, accounts, categories, storeId: req.storeId });
+    res.json({ settings, taxRates, priceTiers, accounts, categories });
   })
 );
 
@@ -103,7 +103,7 @@ router.put(
   })
 );
 
-// ---- Tax rates (each store has its own) ------------------------------------
+// ---- Tax rates ------------------------------------
 const taxSchema = z.object({
   name: z.string().trim().min(1),
   ratePct: z.coerce.number().min(0).max(30),

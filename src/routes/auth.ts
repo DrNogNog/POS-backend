@@ -1,18 +1,13 @@
-// Login, store list, and user management (owner only).
+// Login, who am I, and user management (owner only).
 import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
-import { env } from "../config/env.js";
-import { allow, requireAuth, selectStore, signToken } from "../middleware/auth.js";
+import { storeIdentity } from "../services/settings.js";
+import { allow, attachDb, requireAuth, signToken } from "../middleware/auth.js";
 import { badRequest, idParam, parse, route } from "../lib/http.js";
 import { logActivity } from "../lib/history.js";
 
 const router = Router();
-
-/** Public: which stores exist (for the store picker on the login screen). */
-router.get("/stores", (_req, res) => {
-  res.json(env.stores.map((s) => ({ id: s.id, name: s.name })));
-});
 
 const loginSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
@@ -21,28 +16,30 @@ const loginSchema = z.object({
 
 router.post(
   "/login",
-  selectStore,
+  attachDb,
   route(async (req, res) => {
     const { email, password } = parse(loginSchema, req.body);
     const user = await req.db.user.findUnique({ where: { email } });
     const ok = user && user.active && (await bcrypt.compare(password, user.password));
-    if (!ok) return res.status(401).json({ error: "Wrong email or password for this store." });
+    if (!ok) return res.status(401).json({ error: "Wrong email or password." });
     res.json({
       token: signToken(user.email),
       user: { id: user.id, name: user.name, email: user.email, role: user.role },
-      store: { id: req.storeId, name: env.stores.find((s) => s.id === req.storeId)?.name },
+      store: await storeIdentity(req.db),
     });
   })
 );
 
-router.get("/me", selectStore, requireAuth, (req, res) => {
-  res.json({
-    user: req.user,
-    store: { id: req.storeId, name: env.stores.find((s) => s.id === req.storeId)?.name },
-  });
-});
+router.get(
+  "/me",
+  attachDb,
+  requireAuth,
+  route(async (req, res) => {
+    res.json({ user: req.user, store: await storeIdentity(req.db) });
+  })
+);
 
-// ---- Users (per store) ----------------------------------------------------
+// ---- Users ----------------------------------------------------
 const roles = z.enum(["OWNER", "MANAGER", "ACCOUNTANT", "CASHIER"]);
 const userSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
@@ -54,7 +51,7 @@ const userSchema = z.object({
 
 router.get(
   "/users",
-  selectStore,
+  attachDb,
   requireAuth,
   allow(),
   route(async (req, res) => {
@@ -68,7 +65,7 @@ router.get(
 
 router.post(
   "/users",
-  selectStore,
+  attachDb,
   requireAuth,
   allow(),
   route(async (req, res) => {
@@ -100,7 +97,7 @@ router.post(
 
 router.put(
   "/users/:id",
-  selectStore,
+  attachDb,
   requireAuth,
   allow(),
   route(async (req, res) => {

@@ -6,7 +6,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import cors from "cors";
 import path from "path";
 import { env } from "./config/env.js";
-import { requireAuth, selectStore } from "./middleware/auth.js";
+import { attachDb, requireAuth } from "./middleware/auth.js";
 import { errorHandler } from "./lib/http.js";
 
 import authRoutes from "./routes/auth.js";
@@ -52,7 +52,7 @@ export function createApp() {
     cors({
       origin: env.frontendOrigin.split(",").map((s) => s.trim()),
       methods: ["GET", "POST", "PUT", "DELETE"],
-      allowedHeaders: ["Content-Type", "Authorization", "X-Store"],
+      allowedHeaders: ["Content-Type", "Authorization"],
     })
   );
   app.use(express.json({ limit: "10mb" }));
@@ -66,9 +66,9 @@ export function createApp() {
   app.post("/api/auth/login", loginLimiter());
   app.use("/api/auth", authRoutes);
 
-  // ---- Everything below needs a login for the chosen store ----
+  // ---- Everything below needs a login ----
   const secured = express.Router();
-  secured.use(selectStore, requireAuth);
+  secured.use(attachDb, requireAuth);
 
   secured.use("/settings", settingsRoutes); // store info, tax, price tiers, item codes
   secured.use("/products", productRoutes); // inventory

@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------------
-// Imports a price list CSV into one store's catalog (no stock is added).
+// Imports a price list CSV into the catalog (no stock is added).
 //
 //   npm run import:pricelist -- A data/pricelist-2025.csv
 //
@@ -8,7 +8,6 @@
 // Existing item codes are UPDATED (prices, names); new ones are created.
 // -----------------------------------------------------------------------------
 import fs from "fs";
-import { env, type StoreId } from "../src/config/env.js";
 import { getDb, disconnectAll } from "../src/db/stores.js";
 
 function parseCsv(text: string): Record<string, string>[] {
@@ -37,14 +36,10 @@ function parseCsv(text: string): Record<string, string>[] {
 }
 
 async function main() {
-  const storeId = (process.argv[2] || "").toUpperCase() as StoreId;
-  const file = process.argv[3] || "data/pricelist-2025.csv";
-  if (!env.stores.some((s) => s.id === storeId)) {
-    throw new Error("Usage: npm run import:pricelist -- <A|B> [file.csv]");
-  }
-  const db = getDb(storeId);
+  const file = process.argv[2] || "data/pricelist-2025.csv";
+  const db = getDb();
   const rows = parseCsv(fs.readFileSync(file, "utf8"));
-  console.log(`Importing ${rows.length} items into store ${storeId}...`);
+  console.log(`Importing ${rows.length} items from ${file}...`);
 
   const catIds = new Map<string, number>();
   const supIds = new Map<string, number>();

@@ -4,57 +4,76 @@ The server behind the Champion POS: sales, estimates, invoices, accounts receiva
 purchase orders, supplier bills, accounts payable, inventory costing (FIFO / LIFO /
 weighted average), payroll, financial reports and a full history log.
 
-**Two stores, two databases.** Store A and Store B each have their own PostgreSQL
-database with the same tables, so inventory, customers, prices, taxes and books never
-mix. The web app sends `X-Store: A` or `X-Store: B` with every request.
+**One database, one drive per store.** The app talks to a single PostgreSQL
+database (`DATABASE_URL`). Each store's data lives on its own drive — PostgreSQL's
+`data_directory` points at that drive's mount path — so whichever drive PostgreSQL is
+running from is the store you're working in. The store's name, address, taxes and
+everything else come from that drive's own Settings, so stores never mix.
 
 ---
 
 ## First-time setup (Windows, PowerShell)
 
-1. **Create the two databases** in PostgreSQL (pgAdmin or `psql`):
-   ```sql
-   CREATE DATABASE pos_store_a;
-   CREATE DATABASE pos_store_b;
-   ```
-2. **Settings file:** copy `.env.example` to `.env` and fill it in. You need:
-   - both database addresses, plus `DATABASE_URL` pointing at Store A
+1. **Settings file:** copy `.env.example` to `.env` and fill it in:
+   - `DATABASE_URL` — the same address for every drive (e.g. `.../pos`)
    - a long random `JWT_SECRET`. Generate one with
      `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
-   - `OWNER_EMAIL` / `OWNER_PASSWORD` for the first login
-   - each store's sales tax rate
-3. **Install packages:**
+   - `OWNER_EMAIL` / `OWNER_PASSWORD` (10+ characters) for the first login
+   - `STORE_NAME`, `TAX_NAME`, `TAX_RATE` for a new drive (change later in Settings)
+2. **Install packages:**
    ```powershell
    npm install
    ```
-4. **Create the tables.** This is a one-time step for the new schema:
+3. **Prepare each store's drive** (once per drive — see the next section), then with
+   that drive running:
    ```powershell
-   npx prisma migrate dev --name accounting_v2   # creates the migration on Store A
-   npm run db:migrate                             # applies it to Store A and Store B
+   npm run db:migrate   # creates the tables on this drive
+   npm run seed         # chart of accounts, price levels AA–D, categories, tax, owner login
    ```
-5. **Add the basics** (chart of accounts, price levels AA–D, categories, tax rate, owner login):
-   ```powershell
-   npm run seed
-   ```
-6. **Load the 2025 price list.** This is optional. It loads 3,485 cabinet and vanity-top items with list prices and the 61% supplier discount:
-   ```powershell
-   npm run import:pricelist -- A data/pricelist-2025.csv
-   npm run import:pricelist -- B data/pricelist-2025.csv
-   ```
-   You can also import it from the web app: **Items & stock → Import price list**.
-7. **Start the server:**
+4. **Load a price list** (optional) — from the web app: **Items & stock → Import price
+   list**, or `npm run import:pricelist -- data/pricelist-2025.csv`.
+   `data/test-pricelist.csv` is a made-up list for trying things out.
+5. **Start the server:**
    ```powershell
    npm run dev
    ```
-   It runs on http://localhost:4000. Then start `POS-frontend`.
+   It runs on http://localhost:4000 and prints which database it's using. Then start
+   `POS-frontend`.
+
+## Keeping a store's data on a drive (USB or second disk)
+
+Each drive holds a complete PostgreSQL data directory. Run these from PostgreSQL's `bin`
+folder (e.g. `C:\Program Files\PostgreSQL\16\bin`) in an Administrator PowerShell.
+
+**Make a new store drive** (format the drive **NTFS** first — PostgreSQL needs its
+file permissions):
+```powershell
+.\initdb.exe -D "E:\pos-data" -U postgres -W -E UTF8      # asks for the postgres password
+.\pg_ctl.exe -D "E:\pos-data" -o "-p 5432" start
+.\psql.exe -U postgres -c "CREATE DATABASE pos;"
+```
+Then run `npm run db:migrate` and `npm run seed` (step 3 above).
+
+**Already have PostgreSQL installed?** Stop the service, point its `data_directory` at
+the drive (`data_directory = 'E:/pos-data'` in `postgresql.conf`, or re-register the
+service with `pg_ctl register -N postgresql-pos -D "E:\pos-data"`), and start it again.
+
+**Switching stores:** stop PostgreSQL, swap the drive (or point `data_directory` at the
+other mount path), start PostgreSQL, refresh the web app. The header shows the store's
+name from its Settings.
+
+- **Always stop PostgreSQL before unplugging a drive** (`pg_ctl -D "E:\pos-data" stop`
+  or stop the service). Pulling a drive while it's running can corrupt the store's data.
+- Keep the same drive letter / mount path for a drive, or update `data_directory`.
+- Back up each drive regularly: `pg_dump -U postgres -F c pos > store-backup.dump`.
 
 The old database (`pos_db`) and its migrations (`prisma/migrations_legacy`) are not
 touched. They are kept only for reference.
 
 ### After changing `prisma/schema.prisma`
 ```powershell
-npx prisma migrate dev --name what-changed   # Store A
-npm run db:migrate                            # Store B (and any other store)
+npx prisma migrate dev --name what-changed   # on the drive that's running now
+npm run db:migrate                            # then on each other drive (swap it in first)
 ```
 
 ---
@@ -65,9 +84,9 @@ npm run db:migrate                            # Store B (and any other store)
 src/
   server.ts            starts the API
   app.ts               every route in one readable list
-  config/env.ts        reads .env (stores, secrets)
-  db/stores.ts         one database connection per store
-  middleware/auth.ts   login check, store selection, roles
+  config/env.ts        reads .env (database, secrets)
+  db/stores.ts         the database connection
+  middleware/auth.ts   login check and roles
   domain/              PURE business rules (no database), all unit-tested
     accounts.ts          chart of accounts + the journal entry for every event
     costing.ts           FIFO / LIFO / weighted average
@@ -85,7 +104,7 @@ src/
     reports.ts           balance sheet, P&L, A/R and A/P boards, dashboard
   routes/              thin HTTP layer: validate input -> call a service
   pdf/documentPdf.ts   one PDF layout for estimates, invoices, POs, billing orders
-scripts/               seed, migrate both stores, import price list
+scripts/               seed, migrate, import price list
 tests/                 unit tests + end-to-end tests
 data/pricelist-2025.csv
 ```
@@ -135,7 +154,6 @@ History line. If any step fails, nothing is saved.
 ```powershell
 npm test                 # accounting rules (no database needed)
 npm run test:prepare     # once: builds the test database client
-$env:TEST_DB_URL_A="postgresql://postgres:PASS@localhost:5432/pos_test_a"
-$env:TEST_DB_URL_B="postgresql://postgres:PASS@localhost:5432/pos_test_b"
-npm run test:e2e         # full flow on two THROWAWAY databases (they get wiped)
+$env:TEST_DB_URL="postgresql://postgres:PASS@localhost:5432/pos_test"
+npm run test:e2e         # full flow on a THROWAWAY database (it gets wiped)
 ```

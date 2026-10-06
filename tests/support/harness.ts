@@ -1,22 +1,21 @@
-// TEST HARNESS ONLY: starts the real API against two scratch databases
-// (store A and store B) and gives tests a tiny HTTP client.
+// TEST HARNESS ONLY: starts the real API against a scratch database and
+// gives tests a tiny HTTP client.
 //
-// Needs: TEST_DB_URL_A and TEST_DB_URL_B pointing at EMPTY throwaway
-// databases (they are wiped!), and the test Prisma client generated with
+// Needs: TEST_DB_URL pointing at an EMPTY throwaway database (it is wiped!),
+// and the test Prisma client generated with
 //   npx prisma generate --schema tests/support/schema.test.prisma
 import path from "path";
 import { createRequire } from "module";
 import type { AddressInfo } from "net";
 
-export const DB_A = process.env.TEST_DB_URL_A ?? "";
-export const DB_B = process.env.TEST_DB_URL_B ?? "";
-export const hasDatabase = Boolean(DB_A && DB_B);
+// TEST_DB_URL_A is still accepted from older setups
+export const DB = process.env.TEST_DB_URL ?? process.env.TEST_DB_URL_A ?? "";
+export const hasDatabase = Boolean(DB);
 
-process.env.DATABASE_URL_STORE_A = DB_A || "postgresql://unused/a";
-process.env.DATABASE_URL_STORE_B = DB_B || "postgresql://unused/b";
-process.env.STORE_A_TAX_RATE = "8.875";
-process.env.STORE_A_TAX_NAME = "NY Sales Tax";
-process.env.STORE_B_TAX_RATE = "6.625";
+process.env.DATABASE_URL = DB || "postgresql://unused/db";
+process.env.STORE_NAME = "Test Store";
+process.env.TAX_RATE = "8.875";
+process.env.TAX_NAME = "NY Sales Tax";
 process.env.JWT_SECRET = "test-secret-test-secret-test-secret-123456";
 process.env.OWNER_EMAIL = "owner@test.local";
 process.env.OWNER_PASSWORD = "correct-horse-battery";
@@ -35,15 +34,12 @@ export async function startApi() {
   const fs = await import("fs");
   const datamodel = JSON.parse(fs.readFileSync(path.join(process.cwd(), "tests/support/dmmf.json"), "utf8"));
   const ddl = ddlFromDmmf(datamodel);
-  for (const url of [DB_A, DB_B]) {
-    await runSql(url, "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
-    await runSql(url, ddl);
-  }
+  await runSql(DB, "DROP SCHEMA IF EXISTS public CASCADE; CREATE SCHEMA public;");
+  await runSql(DB, ddl);
   setClientFactory((url: string) => new PrismaClient({ adapter: new TestPgAdapterFactory(url) }));
   const log = console.log;
   console.log = () => {};
-  await seedStore("A");
-  await seedStore("B");
+  await seedStore();
   console.log = log;
 
   const server = createApp().listen(0);
@@ -53,13 +49,12 @@ export async function startApi() {
   async function call(
     method: string,
     url: string,
-    opts: { body?: unknown; token?: string; store?: string } = {}
+    opts: { body?: unknown; token?: string } = {}
   ) {
     const res = await fetch(base + url, {
       method,
       headers: {
         "Content-Type": "application/json",
-        "X-Store": opts.store ?? "A",
         ...(opts.token ? { Authorization: `Bearer ${opts.token}` } : {}),
       },
       body: opts.body === undefined ? undefined : JSON.stringify(opts.body),

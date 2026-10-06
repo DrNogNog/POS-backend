@@ -1,17 +1,18 @@
 // -----------------------------------------------------------------------------
-// Applies database migrations to EVERY store database (Store A and Store B),
-// so both always have the same tables.
+// Applies database migrations to the POS database (DATABASE_URL).
 //
-//   npm run db:migrate        -> prisma migrate deploy on each store
+//   npm run db:migrate
+//
+// Run it with each store's drive in place (PostgreSQL's data_directory
+// pointing at that drive) so every drive gets the same tables.
 // -----------------------------------------------------------------------------
 import { execSync } from "child_process";
 import { env } from "../src/config/env.js";
+import { describeDatabase } from "../src/db/stores.js";
 
-for (const store of env.stores) {
-  console.log(`\n=== ${store.name} (store ${store.id}) ===`);
-  execSync("npx prisma migrate deploy", {
-    stdio: "inherit",
-    env: { ...process.env, DATABASE_URL: store.databaseUrl },
-  });
-}
-console.log("\nAll store databases are up to date.");
+console.log(`Migrating ${describeDatabase()} ...`);
+execSync("npx prisma migrate deploy", {
+  stdio: "inherit",
+  env: { ...process.env, DATABASE_URL: env.databaseUrl },
+});
+console.log("Database is up to date.");

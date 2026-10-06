@@ -1,16 +1,18 @@
 // -----------------------------------------------------------------------------
-// Sets up a store database with the basics. Safe to run more than once.
+// Sets up the database with the basics. Safe to run more than once.
 //
-//   npm run seed            -> seeds every store in .env
-//   npm run seed -- A       -> seeds only Store A
+//   npm run seed
+//
+// Run it once per store drive: point PostgreSQL's data_directory at that
+// drive, then seed. STORE_NAME / TAX_NAME / TAX_RATE in .env are only used
+// the first time — after that, change them on the Settings screen.
 //
 // Creates: store settings, chart of accounts, price tiers AA-D, product
 // categories, a default sales tax rate, and the OWNER login from .env.
 // -----------------------------------------------------------------------------
 import bcrypt from "bcryptjs";
 import { pathToFileURL } from "url";
-import { env, type StoreId } from "../src/config/env.js";
-import { getDb, disconnectAll } from "../src/db/stores.js";
+import { describeDatabase, getDb, disconnectAll } from "../src/db/stores.js";
 import { CHART_OF_ACCOUNTS } from "../src/domain/accounts.js";
 
 const PRICE_TIERS = [
@@ -34,12 +36,12 @@ const CATEGORIES = [
   "Hardware & Houseware",
 ];
 
-export async function seedStore(storeId: StoreId) {
-  const store = env.stores.find((s) => s.id === storeId)!;
-  const db = getDb(storeId);
-  console.log(`\nSeeding ${store.name} (store ${storeId})...`);
+export async function seedStore() {
+  const db = getDb();
+  const storeName = process.env.STORE_NAME || process.env.STORE_A_NAME || "Champion";
+  console.log(`\nSeeding ${describeDatabase()} ...`);
 
-  await db.storeSettings.upsert({ where: { id: 1 }, create: { id: 1, name: store.name }, update: {} });
+  await db.storeSettings.upsert({ where: { id: 1 }, create: { id: 1, name: storeName }, update: {} });
 
   for (const a of CHART_OF_ACCOUNTS) {
     await db.account.upsert({
@@ -55,8 +57,8 @@ export async function seedStore(storeId: StoreId) {
     await db.category.upsert({ where: { name }, create: { name, sortOrder: i }, update: {} });
   }
 
-  const taxName = process.env[`STORE_${storeId}_TAX_NAME`] || "Sales tax";
-  const taxRate = Number(process.env[`STORE_${storeId}_TAX_RATE`] || 0);
+  const taxName = process.env.TAX_NAME || process.env.STORE_A_TAX_NAME || "Sales tax";
+  const taxRate = Number(process.env.TAX_RATE || process.env.STORE_A_TAX_RATE || 0);
   if ((await db.taxRate.count()) === 0) {
     await db.taxRate.create({ data: { name: taxName, ratePct: taxRate, isDefault: true } });
     await db.taxRate.create({ data: { name: "Tax exempt", ratePct: 0 } });
@@ -87,10 +89,7 @@ export async function seedStore(storeId: StoreId) {
 }
 
 async function main() {
-  const only = process.argv[2]?.toUpperCase();
-  const targets = env.stores.filter((s) => !only || s.id === only).map((s) => s.id);
-  if (targets.length === 0) throw new Error(`No store "${only}" in .env`);
-  for (const id of targets) await seedStore(id);
+  await seedStore();
 }
 
 // Run only when called from the command line (not when imported by tests)

@@ -1,16 +1,16 @@
 // -----------------------------------------------------------------------------
-// Login + store selection for every request.
+// Login for every request.
 //
-//  1. The browser sends   Authorization: Bearer <token>   and   X-Store: A|B
-//  2. We verify the token, pick that store's database, and look the user up
-//     IN THAT STORE. A user must have an account in a store to use it.
-//  3. Routes then use `req.db` (the store's database) and `req.user`.
+//  1. The browser sends   Authorization: Bearer <token>
+//  2. We verify the token and look the user up in this store's database
+//     (whichever drive PostgreSQL is running from).
+//  3. Routes then use `req.db` (the database) and `req.user`.
 // -----------------------------------------------------------------------------
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 import type { Role } from "@prisma/client";
-import { env, type StoreId } from "../config/env.js";
-import { getDb, isKnownStore, type Db } from "../db/stores.js";
+import { env } from "../config/env.js";
+import { getDb, type Db } from "../db/stores.js";
 
 export interface AuthUser {
   id: number;
@@ -24,7 +24,6 @@ declare global {
   namespace Express {
     interface Request {
       db: Db;
-      storeId: StoreId;
       user: AuthUser;
     }
   }
@@ -40,18 +39,13 @@ export function signToken(email: string): string {
   });
 }
 
-/** Reads X-Store (or ?store=) and attaches the store database. */
-export function selectStore(req: Request, res: Response, next: NextFunction) {
-  const raw = String(req.header("X-Store") || req.query.store || env.stores[0].id).toUpperCase();
-  if (!isKnownStore(raw)) {
-    return res.status(400).json({ error: `Unknown store "${raw}"` });
-  }
-  req.storeId = raw;
-  req.db = getDb(raw);
+/** Attaches the database to the request. */
+export function attachDb(req: Request, _res: Response, next: NextFunction) {
+  req.db = getDb();
   next();
 }
 
-/** Requires a valid login for the selected store. */
+/** Requires a valid login. */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
     const header = req.header("Authorization") || "";
@@ -67,9 +61,7 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     const payload = jwt.verify(token, env.jwtSecret) as TokenPayload;
     const user = await req.db.user.findUnique({ where: { email: payload.email } });
     if (!user || !user.active) {
-      return res
-        .status(403)
-        .json({ error: `You don't have an account in store ${req.storeId}.` });
+      return res.status(403).json({ error: "You don't have an account in this store." });
     }
     req.user = { id: user.id, email: user.email, name: user.name || user.email, role: user.role };
     next();

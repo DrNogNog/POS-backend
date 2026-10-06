@@ -18,32 +18,20 @@ function required(name: string): string {
   return value;
 }
 
-export type StoreId = "A" | "B";
-
-export interface StoreConfig {
-  id: StoreId;
-  name: string;
-  databaseUrl: string;
-}
-
-/** The stores this server can talk to. Each one is a separate database. */
-function loadStores(): StoreConfig[] {
-  const stores: StoreConfig[] = [
-    {
-      id: "A",
-      name: process.env.STORE_A_NAME || "Store A",
-      databaseUrl: required("DATABASE_URL_STORE_A"),
-    },
-  ];
-  // Store B is optional so the system still runs with a single store.
-  if (process.env.DATABASE_URL_STORE_B) {
-    stores.push({
-      id: "B",
-      name: process.env.STORE_B_NAME || "Store B",
-      databaseUrl: process.env.DATABASE_URL_STORE_B,
-    });
+/**
+ * The ONE database this server uses. Which store's data that is depends on
+ * where PostgreSQL keeps its files (its data_directory) — e.g. a USB drive
+ * per store. Plug in / point at a different drive and the POS shows that
+ * store's data. The store's name, address and taxes live in Settings.
+ *
+ * DATABASE_URL_STORE_A is still accepted so older .env files keep working.
+ */
+function databaseUrl(): string {
+  const url = process.env.DATABASE_URL || process.env.DATABASE_URL_STORE_A;
+  if (!url || !url.trim()) {
+    throw new Error("Missing environment variable DATABASE_URL. Copy .env.example to .env and fill it in.");
   }
-  return stores;
+  return url;
 }
 
 const jwtSecret = required("JWT_SECRET");
@@ -58,6 +46,6 @@ export const env = {
   jwtSecret,
   /** How long a login lasts. */
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || "12h",
-  stores: loadStores(),
+  databaseUrl: databaseUrl(),
   isProduction: process.env.NODE_ENV === "production",
 };
