@@ -177,6 +177,24 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     ids.walkIn = walkIn.data.id;
   });
 
+  test("phone and fax are kept separately from the bill-to address", async () => {
+    const c = await call("POST", "/customers", { name: "Fax Customer", phone: "718-555-0001", fax: "718-555-0002" });
+    assert.equal(c.status, 201, JSON.stringify(c.data));
+    assert.equal(c.data.fax, "718-555-0002");
+    // Empty phone/fax on the estimate → the customer's numbers
+    const est = await call("POST", "/estimates", { customerId: c.data.id, billTo: "Fax Customer\n1 Main St", lines: [{ description: "Measure visit", qty: 1, unitPrice: 50 }] });
+    assert.equal(est.status, 201, JSON.stringify(est.data));
+    assert.equal(est.data.phone, "718-555-0001");
+    assert.equal(est.data.fax, "718-555-0002");
+    // Typed numbers win
+    const inv = await call("POST", "/invoices", { customerId: c.data.id, phone: "917-555-0003", lines: [{ description: "Measure visit", qty: 1, unitPrice: 50 }] });
+    assert.equal(inv.status, 201, JSON.stringify(inv.data));
+    assert.equal(inv.data.phone, "917-555-0003");
+    assert.equal(inv.data.fax, "718-555-0002");
+    const pdf = await call("GET", `/estimates/${est.data.id}/pdf`);
+    assert.equal(pdf.status, 200);
+  });
+
   test("not enough stock is blocked unless special order", async () => {
     const res = await call("POST", "/invoices", {
       customerId: ids.walkIn,

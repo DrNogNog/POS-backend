@@ -157,10 +157,15 @@ purchaseOrdersRouter.get(
       dueDate: po.expectedDate,
       terms: `Net ${po.supplier.paymentTermsDays}`,
       leftBoxTitle: "Supplier",
-      leftBox: [po.supplier.name, po.supplier.contactName, po.supplier.address, po.supplier.phone].filter(Boolean).join("\n"),
+      leftBox: [po.supplier.name, po.supplier.contactName, po.supplier.address].filter(Boolean).join("\n"),
+      phone: po.supplier.phone,
       rightBoxTitle: "Deliver To",
       rightBox: [s.name, s.address, [s.city, s.state, s.zip].filter(Boolean).join(", ")].filter(Boolean).join("\n"),
-      meta: po.supplier.accountNumber ? [["Our account #", po.supplier.accountNumber]] : [],
+      meta: [
+        ["Our account #", po.supplier.accountNumber || ""],
+        ["Status", po.status.toLowerCase()],
+      ],
+      signatureLabel: "Authorized by",
       lines: po.lines.map((l) => ({
         itemCode: l.product.itemCode,
         description: `${l.product.name}${num(l.discountPct) > 0 ? ` (list $${num(l.listPrice).toFixed(2)} less ${num(l.discountPct)}%)` : ""}`,
@@ -294,7 +299,8 @@ billsRouter.get(
       dueDate: bill.dueDate,
       terms: `Net ${bill.termsDays}`,
       leftBoxTitle: "Supplier",
-      leftBox: [bill.supplier.name, bill.supplier.address, bill.supplier.phone].filter(Boolean).join("\n"),
+      leftBox: [bill.supplier.name, bill.supplier.address].filter(Boolean).join("\n"),
+      phone: bill.supplier.phone,
       rightBoxTitle: "Reference",
       rightBox: [bill.purchaseOrder ? `PO ${bill.purchaseOrder.poNo}` : "No purchase order", `Account ${bill.expenseAccountCode}`].join("\n"),
       lines: bill.lines.length

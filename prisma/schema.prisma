@@ -254,6 +254,7 @@ model Customer {
   name     String
   company  String  @default("")
   phone    String  @default("")
+  fax      String  @default("")
   email    String  @default("")
   billingAddress  String @default("")
   shippingAddress String @default("")
@@ -302,6 +303,8 @@ model Estimate {
 
   billTo      String      @default("")
   shipTo      String      @default("")
+  phone       String      @default("") // customer phone printed on the document
+  fax         String      @default("") // customer fax printed on the document
   fulfillment Fulfillment @default(PICKUP)
   priceTierCode String    @default("AA")
 
@@ -356,6 +359,8 @@ model Invoice {
 
   billTo      String      @default("")
   shipTo      String      @default("")
+  phone       String      @default("") // customer phone printed on the document
+  fax         String      @default("") // customer fax printed on the document
   fulfillment Fulfillment @default(PICKUP)
   salesperson String      @default("")
   priceTierCode String    @default("") // price level the sale was priced at (AA, A, B…)

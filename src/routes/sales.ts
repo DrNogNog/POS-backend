@@ -33,6 +33,9 @@ const documentSchema = z.object({
     .positive("Pick a customer for this sale"),
   billTo: z.string().trim().default(""),
   shipTo: z.string().trim().default(""),
+  /** Printed in their own boxes on the PDF. Empty = the customer's own number. */
+  phone: z.string().trim().default(""),
+  fax: z.string().trim().default(""),
   fulfillment: fulfillment.default("PICKUP"),
   priceTierCode: z.string().trim().default("AA"),
   discountAmount: z.coerce.number().min(0).default(0),
@@ -136,8 +139,15 @@ estimatesRouter.get(
       leftBox: est.billTo,
       rightBoxTitle: est.fulfillment === "DELIVERY" ? "Deliver To" : "Ship To / Pickup",
       rightBox: est.fulfillment === "DELIVERY" ? est.shipTo || est.billTo : est.shipTo || "Customer pickup",
+      phone: est.phone,
+      fax: est.fax,
       // Price levels are internal, so they are never printed on customer documents
-      meta: [["Status", est.status === "PENDING" ? "Awaiting approval" : est.status.toLowerCase()]],
+      meta: [
+        ["Prepared by", est.createdBy],
+        ["Fulfillment", est.fulfillment === "DELIVERY" ? "Delivery" : "Pickup"],
+        ["Status", est.status === "PENDING" ? "Awaiting approval" : est.status.toLowerCase()],
+      ],
+      signatureLabel: "Customer approval",
       lines: est.lines.map((l) => ({
         itemCode: l.itemCode,
         description: l.description,
@@ -363,7 +373,14 @@ invoicesRouter.get(
       leftBox: inv.billTo,
       rightBoxTitle: inv.fulfillment === "DELIVERY" ? "Deliver To" : "Ship To / Pickup",
       rightBox: inv.fulfillment === "DELIVERY" ? inv.shipTo || inv.billTo : inv.shipTo || "Customer pickup",
-      meta: [["Salesperson", inv.salesperson], ["Status", inv.status === "VOID" ? "VOID" : inv.status]],
+      phone: inv.phone,
+      fax: inv.fax,
+      meta: [
+        ["Salesperson", inv.salesperson],
+        ["Fulfillment", inv.fulfillment === "DELIVERY" ? "Delivery" : "Pickup"],
+        ["Status", inv.status === "VOID" ? "VOID" : inv.status === "PARTIAL" ? "Partly paid" : inv.status.toLowerCase()],
+      ],
+      signatureLabel: "Received by",
       lines: inv.lines.map((l) => ({
         itemCode: l.itemCode,
         description: l.description,

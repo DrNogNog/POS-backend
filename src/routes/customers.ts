@@ -15,6 +15,7 @@ const customerSchema = z.object({
   name: z.string().trim().min(1, "Name is required"),
   company: z.string().trim().default(""),
   phone: z.string().trim().default(""),
+  fax: z.string().trim().default(""),
   email: z.string().trim().default(""),
   billingAddress: z.string().trim().default(""),
   shippingAddress: z.string().trim().default(""),

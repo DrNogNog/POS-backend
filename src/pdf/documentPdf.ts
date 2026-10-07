@@ -1,8 +1,9 @@
 // -----------------------------------------------------------------------------
 // One PDF layout for every document: Estimate, Invoice, Purchase Order and
 // Billing Order (supplier bill). Generated on the server from the saved data,
-// so the PDF always matches the books. Uses the store logo and store details
-// from Settings.
+// so the PDF always matches the books. The top shows the invoice logo
+// (assets/invoice-logo.png) and the store's address / phone / fax from
+// Settings; dates, numbers, phone, fax and totals sit in labelled boxes.
 //   style "themed" — brown & cream (estimates, purchase and billing orders)
 //   style "plain"  — a normal black & white business document (invoices)
 // -----------------------------------------------------------------------------
@@ -13,6 +14,8 @@ import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf
 type Color = ReturnType<typeof rgb>;
 interface Palette {
   accent: Color; // titles, rules, box borders
+  label: Color; // fill behind small box labels (DATE, PHONE…)
+  labelText: Color;
   band: Color | null; // header background (null = none)
   boxHead: Color; // address box and table header fill
   boxHeadText: Color;
@@ -23,6 +26,8 @@ interface Palette {
 const PALETTES: Record<"themed" | "plain", Palette> = {
   themed: {
     accent: rgb(0.36, 0.25, 0.17), // #5C4033
+    label: rgb(0.96, 0.93, 0.89),
+    labelText: rgb(0.36, 0.25, 0.17),
     band: rgb(0.96, 0.93, 0.89), // #F5EDE3
     boxHead: rgb(0.36, 0.25, 0.17),
     boxHeadText: rgb(1, 1, 1),
@@ -32,6 +37,8 @@ const PALETTES: Record<"themed" | "plain", Palette> = {
   },
   plain: {
     accent: rgb(0, 0, 0),
+    label: rgb(0.93, 0.93, 0.93),
+    labelText: rgb(0, 0, 0),
     band: null,
     boxHead: rgb(0.9, 0.9, 0.9),
     boxHeadText: rgb(0, 0, 0),
@@ -71,7 +78,12 @@ export interface PdfDocumentData {
   leftBox: string;
   rightBoxTitle: string; // "Ship To" / "Deliver To"
   rightBox: string;
-  meta?: [string, string][]; // extra rows like ["Fulfillment", "Delivery"]
+  /** Customer / supplier phone and fax, each printed in its own box. */
+  phone?: string;
+  fax?: string;
+  meta?: [string, string][]; // more boxes, like ["Salesperson", "Ana"]
+  /** Adds a signature + date box, e.g. "Customer approval". */
+  signatureLabel?: string;
   lines: PdfLine[];
   totals: [string, number, boolean?][]; // [label, amount, bold?]
   footerNote?: string;
@@ -105,12 +117,21 @@ function wrap(text: string, font: PDFFont, size: number, maxWidth: number): stri
 }
 
 let logoBytes: Buffer | null | undefined;
+/** The invoice logo; falls back to the older logo.png if it isn't there. */
 function loadLogo(): Buffer | null {
   if (logoBytes !== undefined) return logoBytes;
-  const p = path.join(process.cwd(), "assets", "logo.png");
-  logoBytes = fs.existsSync(p) ? fs.readFileSync(p) : null;
+  const dir = path.join(process.cwd(), "assets");
+  const file = ["invoice-logo.png", "logo.png"].map((f) => path.join(dir, f)).find((f) => fs.existsSync(f));
+  logoBytes = file ? fs.readFileSync(file) : null;
   return logoBytes;
 }
+
+const NUMBER_LABEL: Record<PdfDocumentData["title"], string> = {
+  ESTIMATE: "ESTIMATE NO.",
+  INVOICE: "INVOICE NO.",
+  "PURCHASE ORDER": "P.O. NO.",
+  "BILLING ORDER": "BILL NO.",
+};
 
 export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
@@ -118,134 +139,219 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
   const bold = await doc.embedFont(StandardFonts.HelveticaBold);
   const W = 612;
   const H = 792;
-  const M = 40;
-  let page: PDFPage = doc.addPage([W, H]);
+  const M = 36;
   const C = PALETTES[d.style ?? "themed"];
-  const plain = d.style === "plain";
-  const BROWN = C.accent;
-  const TEXT = C.text;
-  const MUTED = C.muted;
+  const RULE = 0.75;
+  let page: PDFPage = doc.addPage([W, H]);
 
-  const text = (p: PDFPage, s: string, x: number, y: number, size = 10, f = font, color = TEXT) =>
+  const text = (p: PDFPage, s: string, x: number, y: number, size = 10, f = font, color = C.text) =>
     p.drawText(safe(s), { x, y, size, font: f, color });
-  const right = (p: PDFPage, s: string, xRight: number, y: number, size = 10, f = font, color = TEXT) =>
+  const right = (p: PDFPage, s: string, xRight: number, y: number, size = 10, f = font, color = C.text) =>
     p.drawText(safe(s), { x: xRight - f.widthOfTextAtSize(safe(s), size), y, size, font: f, color });
+  const center = (p: PDFPage, s: string, x: number, w: number, y: number, size = 10, f = font, color = C.text) =>
+    p.drawText(safe(s), { x: x + (w - f.widthOfTextAtSize(safe(s), size)) / 2, y, size, font: f, color });
+  /** Shrinks text until it fits the width (for values in narrow boxes). */
+  const fit = (s: string, f: PDFFont, size: number, w: number) => {
+    let sz = size;
+    while (sz > 6 && f.widthOfTextAtSize(safe(s), sz) > w) sz -= 0.5;
+    return sz;
+  };
+  const box = (p: PDFPage, x: number, yTop: number, w: number, h: number, fill?: Color) =>
+    p.drawRectangle({ x, y: yTop - h, width: w, height: h, borderColor: C.accent, borderWidth: RULE, ...(fill ? { color: fill } : {}) });
 
-  // ---- Header band ----
-  if (C.band) {
-    page.drawRectangle({ x: 0, y: H - 110, width: W, height: 110, color: C.band });
-    page.drawRectangle({ x: 0, y: H - 114, width: W, height: 4, color: BROWN });
-  } else {
-    page.drawLine({ start: { x: M, y: H - 114 }, end: { x: W - M, y: H - 114 }, thickness: 1, color: BROWN });
-  }
-  let headerX = M;
+  /**
+   * A row of labelled boxes: a small shaded label band on top, the value
+   * below — like the fields on a printed business form.
+   */
+  const LABEL_H = 13;
+  const boxRow = (p: PDFPage, x: number, yTop: number, w: number, cells: [string, string][], valueH = 18, align: "left" | "center" = "center") => {
+    const cw = w / cells.length;
+    cells.forEach(([label, value], i) => {
+      const cx = x + i * cw;
+      box(p, cx, yTop, cw, LABEL_H, C.label);
+      center(p, label.toUpperCase(), cx, cw, yTop - 9.5, 7, bold, C.labelText);
+      box(p, cx, yTop - LABEL_H, cw, valueH);
+      const v = value || "-";
+      const sz = fit(v, font, 9.5, cw - 8);
+      if (align === "center") center(p, v, cx, cw, yTop - LABEL_H - valueH / 2 - sz / 2 + 2, sz);
+      else text(p, v, cx + 5, yTop - LABEL_H - valueH / 2 - sz / 2 + 2, sz);
+    });
+    return yTop - LABEL_H - valueH;
+  };
+
+  // ---- Header: logo + store contact (left), title + boxed number/date (right) ----
+  if (C.band) page.drawRectangle({ x: 0, y: H - 6, width: W, height: 6, color: C.accent });
+  let leftY = H - M;
   const logo = loadLogo();
+  let drewLogo = false;
   if (logo) {
     try {
       const img = await doc.embedPng(logo);
-      const scale = Math.min(110 / img.width, 70 / img.height);
-      page.drawImage(img, { x: M, y: H - 92, width: img.width * scale, height: img.height * scale });
-      headerX = M + img.width * scale + 14;
+      const scale = Math.min(230 / img.width, 56 / img.height);
+      const w = img.width * scale;
+      const h = img.height * scale;
+      page.drawImage(img, { x: M, y: leftY - h, width: w, height: h });
+      leftY -= h + 8;
+      drewLogo = true;
     } catch {
       /* logo is optional */
     }
   }
-  text(page, store.name, headerX, H - 42, 15, bold, BROWN);
-  const addr = [store.address, [store.city, store.state, store.zip].filter(Boolean).join(", ")]
-    .filter(Boolean)
-    .join("  |  ");
-  text(page, addr, headerX, H - 58, 9, font, MUTED);
-  const contact = [store.phone && `Tel ${store.phone}`, store.fax && `Fax ${store.fax}`, store.email, store.website]
-    .filter(Boolean)
-    .join("  |  ");
-  text(page, contact, headerX, H - 71, 9, font, MUTED);
+  if (!drewLogo && store.name) {
+    text(page, store.name, M, leftY - 16, 16, bold, C.accent);
+    leftY -= 24;
+  }
+  const contactLines = [
+    [store.address, [store.city, store.state, store.zip].filter(Boolean).join(", ")].filter(Boolean).join(", "),
+    [store.phone && `Tel ${store.phone}`, store.fax && `Fax ${store.fax}`].filter(Boolean).join("   |   "),
+    [store.email, store.website].filter(Boolean).join("   |   "),
+  ].filter(Boolean);
+  for (const l of contactLines) {
+    text(page, l, M, leftY - 8, 8.5, font, C.muted);
+    leftY -= 11;
+  }
 
-  right(page, d.title, W - M, H - 42, 20, bold, BROWN);
-  right(page, `# ${d.number}`, W - M, H - 62, 11, bold);
-  right(page, `Date: ${dateStr(d.date)}`, W - M, H - 77, 9);
-  if (d.dueDate) right(page, `Due: ${dateStr(d.dueDate)}`, W - M, H - 90, 9);
-  if (d.terms) right(page, `Terms: ${d.terms}`, W - M, H - 103, 9, font, MUTED);
+  const titleSize = 22;
+  right(page, d.title, W - M, H - M - titleSize + 4, titleSize, bold, C.accent);
+  const gridW = 236;
+  const gridX = W - M - gridW;
+  let rightY = H - M - titleSize - 8;
+  rightY = boxRow(page, gridX, rightY, gridW, [["Date", dateStr(d.date)], [NUMBER_LABEL[d.title], d.number]]);
+  const second: [string, string][] = [];
+  if (d.terms) second.push(["Terms", d.terms]);
+  if (d.dueDate) second.push([d.title === "PURCHASE ORDER" ? "Expected" : "Due date", dateStr(d.dueDate)]);
+  if (second.length) rightY = boxRow(page, gridX, rightY - 4, gridW, second);
 
-  // ---- Address boxes ----
-  let y = H - 135;
-  const boxW = (W - 2 * M - 16) / 2;
-  const boxH = 80;
+  // ---- Bill to / Ship to ----
+  let y = Math.min(leftY, rightY) - 14;
+  const gap = 12;
+  const boxW = (W - 2 * M - gap) / 2;
+  const boxH = 76;
   for (const [i, [title, body]] of [
     [d.leftBoxTitle, d.leftBox],
     [d.rightBoxTitle, d.rightBox],
   ].entries()) {
-    const x = M + i * (boxW + 16);
-    page.drawRectangle({ x, y: y - boxH, width: boxW, height: boxH, borderColor: BROWN, borderWidth: 0.8 });
-    page.drawRectangle({ x, y: y - 16, width: boxW, height: 16, color: C.boxHead, borderColor: BROWN, borderWidth: plain ? 0.8 : 0 });
-    text(page, title.toUpperCase(), x + 8, y - 12, 8.5, bold, C.boxHeadText);
-    let ly = y - 30;
+    const x = M + i * (boxW + gap);
+    box(page, x, y, boxW, LABEL_H + 2, C.boxHead);
+    text(page, title.toUpperCase(), x + 7, y - 10.5, 7.5, bold, C.boxHeadText);
+    box(page, x, y - LABEL_H - 2, boxW, boxH - LABEL_H - 2);
+    let ly = y - LABEL_H - 15;
     for (const line of (body || "").split("\n").filter((l) => l.trim()).slice(0, 4)) {
-      text(page, line.trim(), x + 8, ly, 9.5);
+      text(page, line.trim(), x + 7, ly, 9.5);
       ly -= 12;
     }
   }
-  y -= boxH + 12;
+  y -= boxH + 10;
 
-  if (d.meta?.length) {
-    text(page, d.meta.map(([k, v]) => `${k}: ${v}`).join("     "), M, y, 9, font, MUTED);
-    y -= 16;
-  }
+  // ---- Phone / fax / other details, each in its own box ----
+  const details: [string, string][] = [];
+  if (d.phone !== undefined) details.push(["Phone", d.phone]);
+  if (d.fax !== undefined) details.push(["Fax", d.fax]);
+  for (const m of d.meta ?? []) details.push(m);
+  if (details.length) y = boxRow(page, M, y, W - 2 * M, details) - 12;
 
-  // ---- Lines table ----
-  // Column positions: text columns by left edge, number columns by right edge
-  const col = { item: M + 6, desc: M + 100, descWidth: 245, qtyRight: M + 395, priceRight: M + 465, amountRight: W - M - 6 };
+  // ---- Lines table: every column ruled ----
+  const x0 = M;
+  const x5 = W - M;
+  const x1 = x0 + 92;
+  const x4 = x5 - 86;
+  const x3 = x4 - 76;
+  const x2 = x3 - 48;
+  const cols = [x0, x1, x2, x3, x4, x5];
+  const descWidth = x2 - x1 - 12;
+  const HEAD_H = 18;
   const drawHeader = (p: PDFPage, yy: number) => {
-    p.drawRectangle({ x: M, y: yy - 18, width: W - 2 * M, height: 18, color: C.boxHead, borderColor: BROWN, borderWidth: plain ? 0.8 : 0 });
-    const white = C.boxHeadText;
-    text(p, "ITEM", col.item, yy - 13, 8.5, bold, white);
-    text(p, "DESCRIPTION", col.desc, yy - 13, 8.5, bold, white);
-    right(p, "QTY", col.qtyRight, yy - 13, 8.5, bold, white);
-    right(p, "PRICE", col.priceRight, yy - 13, 8.5, bold, white);
-    right(p, "AMOUNT", col.amountRight, yy - 13, 8.5, bold, white);
-    return yy - 30;
+    p.drawRectangle({ x: x0, y: yy - HEAD_H, width: x5 - x0, height: HEAD_H, color: C.boxHead, borderColor: C.accent, borderWidth: RULE });
+    const t = C.boxHeadText;
+    text(p, "ITEM", x0 + 6, yy - 12.5, 7.5, bold, t);
+    text(p, "DESCRIPTION", x1 + 6, yy - 12.5, 7.5, bold, t);
+    center(p, "QTY", x2, x3 - x2, yy - 12.5, 7.5, bold, t);
+    right(p, "PRICE", x4 - 6, yy - 12.5, 7.5, bold, t);
+    right(p, "AMOUNT", x5 - 6, yy - 12.5, 7.5, bold, t);
+    return yy - HEAD_H;
   };
-  y = drawHeader(page, y);
+  /** Vertical rules + outer border for the rows drawn between top and bottom. */
+  const ruleColumns = (p: PDFPage, top: number, bottom: number) => {
+    for (const cx of cols) p.drawLine({ start: { x: cx, y: top }, end: { x: cx, y: bottom }, thickness: RULE, color: C.accent });
+    p.drawLine({ start: { x: x0, y: bottom }, end: { x: x5, y: bottom }, thickness: RULE, color: C.accent });
+  };
 
+  let tableTop = drawHeader(page, y);
+  y = tableTop;
+  const BOTTOM = 70;
   d.lines.forEach((l, idx) => {
-    const descLines = wrap(l.description, font, 9, col.descWidth);
-    const rowH = Math.max(1, descLines.length) * 11 + 6;
-    if (y - rowH < 150) {
+    const descLines = wrap(l.description, font, 9, descWidth);
+    const rowH = descLines.length * 11 + 8;
+    if (y - rowH < BOTTOM) {
+      ruleColumns(page, tableTop, y);
       page = doc.addPage([W, H]);
-      y = drawHeader(page, H - M);
+      tableTop = drawHeader(page, H - M);
+      y = tableTop;
     }
-    if (C.stripe && idx % 2 === 1) page.drawRectangle({ x: M, y: y - rowH + 10, width: W - 2 * M, height: rowH, color: C.stripe });
-    if (plain) {
-      const lineY = y - rowH + 10;
-      page.drawLine({ start: { x: M, y: lineY }, end: { x: W - M, y: lineY }, thickness: 0.4, color: rgb(0.8, 0.8, 0.8) });
-    }
-    text(page, l.itemCode, col.item, y, 9, bold);
-    descLines.forEach((dl, i) => text(page, dl, col.desc, y - i * 11, 9));
-    right(page, String(Number(l.qty.toFixed(3))), col.qtyRight, y, 9);
-    right(page, money(l.unitPrice), col.priceRight, y, 9);
-    right(page, money(l.lineTotal), col.amountRight, y, 9, bold);
+    if (C.stripe && idx % 2 === 1) page.drawRectangle({ x: x0, y: y - rowH, width: x5 - x0, height: rowH, color: C.stripe });
+    const base = y - 13;
+    text(page, l.itemCode, x0 + 6, base, 8.5, bold);
+    descLines.forEach((dl, i) => text(page, dl, x1 + 6, base - i * 11, 9));
+    center(page, String(Number(l.qty.toFixed(3))), x2, x3 - x2, base, 9);
+    right(page, money(l.unitPrice), x4 - 6, base, 9);
+    right(page, money(l.lineTotal), x5 - 6, base, 9, bold);
     y -= rowH;
+    page.drawLine({ start: { x: x0, y }, end: { x: x5, y }, thickness: 0.3, color: C.muted });
   });
+  // A few empty ruled rows make short documents look like a finished form
+  for (let i = d.lines.length; i < 6 && y - 18 > BOTTOM + 160; i++) {
+    y -= 18;
+    page.drawLine({ start: { x: x0, y }, end: { x: x5, y }, thickness: 0.3, color: C.muted });
+  }
+  ruleColumns(page, tableTop, y);
 
-  // ---- Totals ----
-  y -= 6;
-  page.drawLine({ start: { x: M, y }, end: { x: W - M, y }, thickness: 0.8, color: BROWN });
-  y -= 16;
+  // ---- Totals: boxed label | amount rows, under the money columns ----
+  const rowsNeeded = d.totals.length * 18 + 10;
+  if (y - rowsNeeded < BOTTOM) {
+    page = doc.addPage([W, H]);
+    y = H - M;
+  }
+  const tLabelX = x3;
+  const tLabelW = x4 - x3;
+  const tAmtW = x5 - x4;
+  let ty = y - 8;
   for (const [label, amount, isBold] of d.totals) {
-    if (y < 60) {
-      page = doc.addPage([W, H]);
-      y = H - M;
-    }
-    right(page, label, W - M - 110, y, isBold ? 11 : 9.5, isBold ? bold : font, isBold ? BROWN : TEXT);
-    right(page, money(amount), W - M - 6, y, isBold ? 11 : 9.5, isBold ? bold : font, isBold ? BROWN : TEXT);
-    y -= isBold ? 18 : 14;
+    const h = isBold ? 20 : 17;
+    box(page, tLabelX, ty, tLabelW, h, isBold ? C.boxHead : C.label);
+    box(page, x4, ty, tAmtW, h, isBold ? C.label : undefined);
+    const lsz = fit(label.toUpperCase(), bold, isBold ? 8.5 : 7.5, tLabelW - 10);
+    right(page, label.toUpperCase(), x4 - 6, ty - h / 2 - lsz / 2 + 2, lsz, bold, isBold ? C.boxHeadText : C.labelText);
+    right(page, money(amount), x5 - 6, ty - h / 2 - 3, isBold ? 10.5 : 9.5, isBold ? bold : font, isBold ? C.accent : C.text);
+    ty -= h;
   }
 
+  // ---- Notes and signature, boxed, beside the totals ----
+  const leftW = tLabelX - M - 14;
+  let ly = y - 8;
   if (d.footerNote) {
-    for (const [i, l] of wrap(d.footerNote, font, 8.5, W - 2 * M).entries()) {
-      text(page, l, M, 50 - i * 11, 8.5, font, MUTED);
-    }
+    const noteLines = wrap(d.footerNote, font, 8.5, leftW - 12).slice(0, 6);
+    const nh = LABEL_H + noteLines.length * 11 + 10;
+    box(page, M, ly, leftW, LABEL_H, C.label);
+    text(page, "NOTES", M + 6, ly - 9.5, 7, bold, C.labelText);
+    box(page, M, ly - LABEL_H, leftW, nh - LABEL_H);
+    noteLines.forEach((l, i) => text(page, l, M + 6, ly - LABEL_H - 12 - i * 11, 8.5, font, C.muted));
+    ly -= nh + 8;
   }
+  if (d.signatureLabel) {
+    const sigW = leftW * 0.68;
+    box(page, M, ly, sigW, LABEL_H, C.label);
+    text(page, d.signatureLabel.toUpperCase(), M + 6, ly - 9.5, 7, bold, C.labelText);
+    box(page, M, ly - LABEL_H, sigW, 30);
+    box(page, M + sigW, ly, leftW - sigW, LABEL_H, C.label);
+    center(page, "DATE", M + sigW, leftW - sigW, ly - 9.5, 7, bold, C.labelText);
+    box(page, M + sigW, ly - LABEL_H, leftW - sigW, 30);
+  }
+
   const pages = doc.getPages();
-  pages.forEach((p, i) => right(p, `Page ${i + 1} of ${pages.length}`, W - M, 22, 8, font, MUTED));
+  pages.forEach((p, i) => {
+    p.drawLine({ start: { x: M, y: 34 }, end: { x: W - M, y: 34 }, thickness: 0.5, color: C.muted });
+    text(p, `${d.title} ${d.number}`, M, 22, 7.5, font, C.muted);
+    right(p, `Page ${i + 1} of ${pages.length}`, W - M, 22, 7.5, font, C.muted);
+  });
   return doc.save();
 }

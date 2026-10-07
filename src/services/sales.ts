@@ -49,6 +49,8 @@ export interface DocumentInput {
   customerId?: number | null;
   billTo?: string;
   shipTo?: string;
+  phone?: string;
+  fax?: string;
   fulfillment?: Fulfillment;
   priceTierCode?: string;
   discountAmount?: number;
@@ -109,10 +111,13 @@ export async function saveEstimate(
   const taxRatePct = await resolveTaxRate(tx, input.customerId, input.taxRatePct);
   const totals = documentTotals(lines, input.discountAmount ?? 0, taxRatePct);
 
+  const customer = input.customerId ? await tx.customer.findUnique({ where: { id: input.customerId } }) : null;
   const data = {
     customerId: input.customerId ?? null,
     billTo: input.billTo ?? "",
     shipTo: input.shipTo ?? "",
+    phone: input.phone || customer?.phone || "",
+    fax: input.fax || customer?.fax || "",
     fulfillment: input.fulfillment ?? "PICKUP",
     priceTierCode: input.priceTierCode ?? "AA",
     subtotal: totals.subtotal,
@@ -258,6 +263,8 @@ export async function createInvoice(tx: Tx, input: InvoiceInput, user: AuthUser)
       dueDate: dueDateFor(issueDate, termsDays),
       billTo: input.billTo ?? customer?.billingAddress ?? "",
       shipTo: input.shipTo ?? customer?.shippingAddress ?? "",
+      phone: input.phone || customer?.phone || "",
+      fax: input.fax || customer?.fax || "",
       fulfillment: input.fulfillment ?? customer?.fulfillment ?? "PICKUP",
       salesperson: input.salesperson || user.name,
       priceTierCode: input.priceTierCode ?? "",
@@ -351,6 +358,8 @@ export async function invoiceFromEstimate(
       customerId: est.customerId,
       billTo: est.billTo,
       shipTo: est.shipTo,
+      phone: est.phone,
+      fax: est.fax,
       fulfillment: est.fulfillment,
       priceTierCode: est.priceTierCode,
       discountAmount: num(est.discountAmount),
