@@ -142,11 +142,6 @@ estimatesRouter.get(
       phone: est.phone,
       fax: est.fax,
       // Price levels are internal, so they are never printed on customer documents
-      meta: [
-        ["Prepared by", est.createdBy],
-        ["Fulfillment", est.fulfillment === "DELIVERY" ? "Delivery" : "Pickup"],
-        ["Status", est.status === "PENDING" ? "Awaiting approval" : est.status.toLowerCase()],
-      ],
       signatureLabel: "Customer approval",
       lines: est.lines.map((l) => ({
         itemCode: l.itemCode,
@@ -357,29 +352,16 @@ invoicesRouter.get(
     if (num(inv.discountsTaken) > 0) totals.push(["Early-pay discount", -num(inv.discountsTaken)]);
     if (num(inv.writtenOff) > 0) totals.push(["Written off", -num(inv.writtenOff)]);
     totals.push(["BALANCE DUE", p.balance, true]);
-    const pct = num(inv.earlyPayDiscountPct);
     await sendPdf(req, res, inv.invoiceNo, {
       title: "INVOICE",
       number: inv.invoiceNo,
       date: inv.issueDate,
-      dueDate: inv.dueDate,
-      terms:
-        inv.termsDays === 0
-          ? "Due on receipt"
-          : pct > 0
-            ? `${pct}/${inv.earlyPayDiscountDays} net ${inv.termsDays}`
-            : `Net ${inv.termsDays}`,
       leftBoxTitle: "Bill To",
       leftBox: inv.billTo,
       rightBoxTitle: inv.fulfillment === "DELIVERY" ? "Deliver To" : "Ship To / Pickup",
       rightBox: inv.fulfillment === "DELIVERY" ? inv.shipTo || inv.billTo : inv.shipTo || "Customer pickup",
       phone: inv.phone,
       fax: inv.fax,
-      meta: [
-        ["Salesperson", inv.salesperson],
-        ["Fulfillment", inv.fulfillment === "DELIVERY" ? "Delivery" : "Pickup"],
-        ["Status", inv.status === "VOID" ? "VOID" : inv.status === "PARTIAL" ? "Partly paid" : inv.status.toLowerCase()],
-      ],
       signatureLabel: "Received by",
       lines: inv.lines.map((l) => ({
         itemCode: l.itemCode,
@@ -389,10 +371,8 @@ invoicesRouter.get(
         lineTotal: num(l.lineTotal),
       })),
       totals,
-      footerNote:
-        (pct > 0 && p.earlyDiscountDeadline
-          ? `Pay by ${p.earlyDiscountDeadline.toLocaleDateString("en-US")} and take ${pct}% off ($${p.earlyDiscountAmount.toFixed(2)}). `
-          : "") + (inv.notes || "Thank you for your business!"),
+      // No terms or early-payment wording on the customer's copy
+      footerNote: inv.notes || "Thank you for your business!",
       style: "plain", // invoices print as a normal black & white document
     });
   })

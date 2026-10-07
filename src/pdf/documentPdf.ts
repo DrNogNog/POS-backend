@@ -72,16 +72,13 @@ export interface PdfDocumentData {
   title: "ESTIMATE" | "INVOICE" | "PURCHASE ORDER" | "BILLING ORDER";
   number: string;
   date: Date;
-  dueDate?: Date | null;
-  terms?: string;
   leftBoxTitle: string; // "Bill To" / "Supplier"
   leftBox: string;
   rightBoxTitle: string; // "Ship To" / "Deliver To"
   rightBox: string;
-  /** Customer / supplier phone and fax, each printed in its own box. */
+  /** Customer / supplier phone and fax, stacked in boxes beside the addresses. */
   phone?: string;
   fax?: string;
-  meta?: [string, string][]; // more boxes, like ["Salesperson", "Ana"]
   /** Adds a signature + date box, e.g. "Customer approval". */
   signatureLabel?: string;
   lines: PdfLine[];
@@ -217,15 +214,12 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
   const gridX = W - M - gridW;
   let rightY = H - M - titleSize - 8;
   rightY = boxRow(page, gridX, rightY, gridW, [["Date", dateStr(d.date)], [NUMBER_LABEL[d.title], d.number]]);
-  const second: [string, string][] = [];
-  if (d.terms) second.push(["Terms", d.terms]);
-  if (d.dueDate) second.push([d.title === "PURCHASE ORDER" ? "Expected" : "Due date", dateStr(d.dueDate)]);
-  if (second.length) rightY = boxRow(page, gridX, rightY - 4, gridW, second);
 
-  // ---- Bill to / Ship to ----
+  // ---- Bill to | Ship to | phone stacked over fax ----
   let y = Math.min(leftY, rightY) - 14;
-  const gap = 12;
-  const boxW = (W - 2 * M - gap) / 2;
+  const gap = 10;
+  const stackW = 130;
+  const boxW = (W - 2 * M - stackW - 2 * gap) / 2;
   const boxH = 76;
   for (const [i, [title, body]] of [
     [d.leftBoxTitle, d.leftBox],
@@ -241,14 +235,13 @@ export async function renderDocumentPdf(store: PdfStore, d: PdfDocumentData): Pr
       ly -= 12;
     }
   }
-  y -= boxH + 10;
-
-  // ---- Phone / fax / other details, each in its own box ----
-  const details: [string, string][] = [];
-  if (d.phone !== undefined) details.push(["Phone", d.phone]);
-  if (d.fax !== undefined) details.push(["Fax", d.fax]);
-  for (const m of d.meta ?? []) details.push(m);
-  if (details.length) y = boxRow(page, M, y, W - 2 * M, details) - 12;
+  {
+    const sx = W - M - stackW;
+    const half = boxH / 2;
+    boxRow(page, sx, y, stackW, [["Phone", d.phone ?? ""]], half - LABEL_H - 1);
+    boxRow(page, sx, y - half - 1, stackW, [["Fax", d.fax ?? ""]], half - LABEL_H - 1);
+  }
+  y -= boxH + 14;
 
   // ---- Lines table: every column ruled ----
   const x0 = M;
