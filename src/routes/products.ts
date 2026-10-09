@@ -282,9 +282,17 @@ router.post(
     const unitCost = input.unitCost ?? netCost(input.listPrice, input.supplierDiscountPct);
     const { openingQty, ...data } = input;
     const product = await req.db.$transaction(async (tx) => {
-      const p = await tx.product.create({
-        data: { ...data, unitCost, images: files.map((f) => f.filename) },
-      });
+      // An item code that belonged to a deleted item is reused: the old record
+      // comes back with the new details (past invoices keep pointing at it).
+      const gone = await tx.product.findFirst({ where: { itemCode: data.itemCode, deletedAt: { not: null } } });
+      const p = gone
+        ? await tx.product.update({
+            where: { id: gone.id },
+            data: { ...data, unitCost, images: files.map((f) => f.filename), deletedAt: null },
+          })
+        : await tx.product.create({
+            data: { ...data, unitCost, images: files.map((f) => f.filename) },
+          });
       await logActivity(tx, {
         entityType: "Product",
         entityId: p.id,
@@ -367,7 +375,21 @@ router.delete(
   allow("MANAGER"),
   route(async (req, res) => {
     const id = idParam(req);
+    const settings = await getSettings(req.db);
     await req.db.$transaction(async (tx) => {
+      const before = await tx.product.findFirst({ where: { id, deletedAt: null } });
+      if (!before) throw notFound("Product");
+      // Units still on hand are written off, so stock value and the books match.
+      const onHand = num(before.qtyOnHand);
+      if (onHand > 0) {
+        await adjustStock(tx, {
+          productId: id,
+          qtyChange: -onHand,
+          reason: "Item deleted from inventory",
+          method: settings.costingMethod,
+          userName: req.user.name,
+        });
+      }
       const p = await tx.product.update({ where: { id }, data: { deletedAt: new Date() } });
       await tx.archive.create({ data: { entity: "Product", entityId: id, data: JSON.parse(JSON.stringify(p)) } });
       await logActivity(tx, {
@@ -375,7 +397,7 @@ router.delete(
         entityId: id,
         entityRef: p.itemCode,
         action: "ARCHIVED",
-        summary: `Product ${p.itemCode} archived`,
+        summary: onHand > 0 ? `Product ${p.itemCode} deleted (${onHand} on hand written off)` : `Product ${p.itemCode} deleted`,
         userName: req.user.name,
       });
     });

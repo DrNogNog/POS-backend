@@ -477,6 +477,22 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal(run.status, 201, JSON.stringify(run.data));
   });
 
+  test("deleting an item writes off its stock; the code can be used again", async () => {
+    const made = await call("POST", "/products", { itemCode: "ZT-DEL1", name: "Item to delete", unitCost: 12, openingQty: 4 });
+    assert.equal(made.status, 201, JSON.stringify(made.data));
+    const del = await call("DELETE", `/products/${made.data.id}`);
+    assert.equal(del.status, 200, JSON.stringify(del.data));
+    const list = (await call("GET", "/products?q=ZT-DEL1")).data.items;
+    assert.equal(list.length, 0);
+    assert.equal((await call("DELETE", `/products/${made.data.id}`)).status, 404);
+    const again = await call("POST", "/products", { itemCode: "ZT-DEL1", name: "Back again", unitCost: 5 });
+    assert.equal(again.status, 201, JSON.stringify(again.data));
+    const back = (await call("GET", "/products?q=ZT-DEL1")).data.items;
+    assert.equal(back.length, 1);
+    assert.equal(back[0].name, "Back again");
+    assert.equal(Number(back[0].qtyOnHand), 0);
+  });
+
   test("the books balance", async () => {
     const tb = await call("GET", "/reports/trial-balance");
     assert.equal(tb.data.inBalance, true, JSON.stringify(tb.data.rows.filter((r: Any) => r.debit || r.credit)));
