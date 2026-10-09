@@ -351,6 +351,32 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.deepEqual([av.data[0].onHand, av.data[0].available], [2, 2]);
   });
 
+  test("date in: old inventory before the POS, or the day stock came in", async () => {
+    const imp = await call("POST", "/products/import", {
+      rows: [
+        { itemCode: "ZT-OLD1", name: "Old stock item", listPrice: 10, qtyOnHand: 3, dateIn: "old" },
+        { itemCode: "ZT-NEW1", name: "New stock item", listPrice: 10, qtyOnHand: 2, dateIn: "2026-09-15" },
+      ],
+    });
+    assert.equal(imp.status, 200, JSON.stringify(imp.data));
+    const old = (await call("GET", "/products?dateIn=old")).data.items;
+    assert.ok(old.some((p: Any) => p.itemCode === "ZT-OLD1"));
+    assert.ok(!old.some((p: Any) => p.itemCode === "ZT-NEW1"));
+    const sept = (await call("GET", "/products?dateInFrom=2026-09-01&dateInTo=2026-09-30")).data.items;
+    assert.deepEqual(sept.map((p: Any) => p.itemCode), ["ZT-NEW1"]);
+    const oldId = old.find((p: Any) => p.itemCode === "ZT-OLD1").id;
+    // Old stock's cost layer is dated early so FIFO sells it first
+    const detail = await call("GET", `/products/${oldId}`);
+    assert.equal(detail.data.oldInventory, true);
+    assert.equal(new Date(detail.data.lots[0].receivedAt).getUTCFullYear(), 2000);
+    // New stock arriving later sets the date in and it's no longer "old inventory"
+    const add = await call("POST", `/products/${oldId}/adjust`, { qtyChange: 1, reason: "Delivery", dateIn: "2026-10-01" });
+    assert.equal(add.status, 200, JSON.stringify(add.data));
+    const after = await call("GET", `/products/${oldId}`);
+    assert.equal(after.data.oldInventory, false);
+    assert.equal(after.data.dateIn.slice(0, 10), "2026-10-01");
+  });
+
   test("adding stock averages the cost in (or replaces / keeps it)", async () => {
     // 2 on hand at $10; add 2 at $20 → average $15
     const add = await call("POST", `/products/${ids.commit}/adjust`, { qtyChange: 2, unitCost: 20, reason: "Count" });

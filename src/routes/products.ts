@@ -41,6 +41,13 @@ const upload = multer({
 
 const MAX_IMAGES = 12;
 
+/**
+ * A calendar day ("2026-10-09") becomes midday local time, so it never shows
+ * as the day before/after in other time zones. Full date-times pass through.
+ */
+const dayAtNoon = (v: unknown) => (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? `${v}T12:00:00` : v);
+const dateInField = z.preprocess(dayAtNoon, z.coerce.date());
+
 // ---- Validation -------------------------------------------------------------
 const productSchema = z.object({
   itemCode: z.string().trim().min(1, "Item code is required").max(60).toUpperCase(),
@@ -59,7 +66,19 @@ const productSchema = z.object({
   reorderQty: z.coerce.number().min(0).default(0),
   /** Opening stock when creating a product. */
   openingQty: z.coerce.number().min(0).optional(),
+  /** When the stock came in; or oldInventory = stock from before the POS system. */
+  dateIn: dateInField.optional().nullable(),
+  oldInventory: z.coerce.boolean().optional(),
 });
+
+/** ?dateIn=old → old inventory; dateInFrom / dateInTo → stock that came in between those days */
+function dateInFilter(q: Record<string, unknown>): Prisma.ProductWhereInput {
+  if (q.dateIn === "old") return { oldInventory: true };
+  const from = q.dateInFrom ? new Date(String(q.dateInFrom)) : null;
+  const to = q.dateInTo ? new Date(String(q.dateInTo) + "T23:59:59") : null;
+  if (!from && !to) return {};
+  return { oldInventory: false, dateIn: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } };
+}
 
 /** Multipart forms send everything as strings; turn "" into undefined. */
 function cleanForm(body: Record<string, unknown>) {
@@ -93,8 +112,9 @@ router.get(
     if (req.query.supplierId) where.supplierId = Number(req.query.supplierId);
     if (req.query.collection) where.collection = String(req.query.collection);
     if (req.query.inStock === "true") where.qtyOnHand = { gt: 0 };
+    Object.assign(where, dateInFilter(req.query));
     const { take, skip, page, limit } = pageParams(req, 50);
-    const sort = orderBy(req, ["itemCode", "name", "qtyOnHand", "unitCost", "listPrice", "updatedAt"] as const, "itemCode", "asc");
+    const sort = orderBy(req, ["itemCode", "name", "qtyOnHand", "unitCost", "listPrice", "updatedAt", "dateIn"] as const, "itemCode", "asc");
 
     let lowStockIds: number[] | null = null;
     if (req.query.lowStock === "true") {
@@ -233,7 +253,9 @@ router.post(
           productId: p.id,
           qtyChange: openingQty,
           unitCost,
-          reason: "Opening stock",
+          dateIn: data.dateIn ?? undefined,
+          oldInventory: data.oldInventory,
+          reason: data.oldInventory ? "Old inventory (before POS system)" : "Opening stock",
           method: settings.costingMethod,
           userName: req.user.name,
         });
@@ -322,6 +344,9 @@ const adjustSchema = z.object({
   unitCost: z.coerce.number().min(0).optional(),
   costUpdate: z.enum(["average", "replace", "keep"]).default("average"),
   reason: z.string().trim().min(1, "Give a reason (count, damage, opening stock...)"),
+  /** For added units: when they came in, or old inventory from before the POS. */
+  dateIn: dateInField.optional(),
+  oldInventory: z.boolean().optional(),
 });
 
 router.post(
@@ -351,7 +376,21 @@ const importRow = z.object({
   unitCost: z.coerce.number().min(0).optional(),
   unit: z.string().trim().default("each"),
   qtyOnHand: z.coerce.number().min(0).optional(),
+  /** "old" (or empty) = old inventory from before the POS; or a date like 2026-10-09 */
+  dateIn: z
+    .string()
+    .trim()
+    .default("")
+    .refine((v) => !v || /^(old|before|pre)/i.test(v) || !Number.isNaN(new Date(v).getTime()), {
+      message: 'dateIn must be a date (e.g. 2026-10-09) or "old"',
+    }),
 });
+
+/** Import rows: blank / "old" → old inventory; anything else is the date it came in. */
+function importDateIn(v: string): { dateIn: Date | null; oldInventory: boolean } {
+  if (!v || /^(old|before|pre)/i.test(v)) return { dateIn: null, oldInventory: true };
+  return { dateIn: new Date(String(dayAtNoon(v))), oldInventory: false };
+}
 
 router.post(
   "/import",
@@ -398,7 +437,8 @@ router.post(
             await tx.product.update({ where: { id: existing.id }, data: { ...data, deletedAt: null } });
             updated++;
           } else {
-            const p = await tx.product.create({ data: { itemCode: r.itemCode, ...data } });
+            const when = importDateIn(r.dateIn);
+            const p = await tx.product.create({ data: { itemCode: r.itemCode, ...data, ...when } });
             created++;
             if (r.qtyOnHand && r.qtyOnHand > 0) {
               openingValue = round2(openingValue + r.qtyOnHand * unitCost);
@@ -408,6 +448,8 @@ router.post(
                 unitCost,
                 source: "OPENING",
                 sourceRef: "IMPORT",
+                date: when.dateIn ?? undefined,
+                oldInventory: when.oldInventory,
               });
             }
           }

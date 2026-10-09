@@ -185,6 +185,10 @@ model Product {
   qtyOnHand    Decimal @default(0) @db.Decimal(12, 3)
   reorderPoint Decimal @default(0) @db.Decimal(12, 3)
   reorderQty   Decimal @default(0) @db.Decimal(12, 3)
+  /// When the stock came in: the latest receiving date, or "old inventory"
+  /// (stock we already had before the POS system) when oldInventory is true.
+  dateIn       DateTime?
+  oldInventory Boolean   @default(false)
 
   images    String[]
   deletedAt DateTime?

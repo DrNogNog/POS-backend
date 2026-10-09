@@ -26,6 +26,13 @@ export function averageCost(onHand: number, costNow: number, qtyAdded: number, c
   return round4((have * costNow + qtyAdded * costAdded) / (have + qtyAdded));
 }
 
+/**
+ * Stock we already had before the POS system has no real receiving date.
+ * Its cost layers get this early date so FIFO sells the old stock first.
+ */
+export const OLD_INVENTORY_DATE = new Date("2000-01-01T00:00:00.000Z");
+export const OLD_INVENTORY_REF = "OLD INVENTORY";
+
 export async function receiveStock(
   tx: Tx,
   i: {
@@ -43,6 +50,8 @@ export async function receiveStock(
      *   keep    — stays as it is
      */
     costUpdate?: "average" | "replace" | "keep";
+    /** Old inventory from before the POS system (no real date in). */
+    oldInventory?: boolean;
   }
 ) {
   if (i.qty <= 0) throw badRequest("Quantity received must be more than zero");
@@ -51,15 +60,16 @@ export async function receiveStock(
   const movementType: MovementType =
     i.source === "PURCHASE" ? "RECEIVE" : i.source === "RETURN" ? "RETURN_IN" : "ADJUST_IN";
 
+  const receivedAt = i.oldInventory ? OLD_INVENTORY_DATE : i.date ?? new Date();
   await tx.inventoryLot.create({
     data: {
       productId: i.productId,
-      receivedAt: i.date ?? new Date(),
+      receivedAt,
       qtyReceived: qty,
       qtyRemaining: qty,
       unitCost,
       source: i.source,
-      sourceRef: i.sourceRef ?? "",
+      sourceRef: i.oldInventory ? OLD_INVENTORY_REF : i.sourceRef ?? "",
     },
   });
   await tx.inventoryMovement.create({
@@ -69,12 +79,26 @@ export async function receiveStock(
       qty,
       unitCost,
       totalCost: round2(qty * unitCost),
-      reference: i.sourceRef ?? "",
+      reference: i.oldInventory ? OLD_INVENTORY_REF : i.sourceRef ?? "",
       note: i.note ?? "",
-      createdAt: i.date ?? new Date(),
+      createdAt: i.oldInventory ? new Date() : i.date ?? new Date(),
     },
   });
-  const before = await tx.product.findUnique({ where: { id: i.productId }, select: { qtyOnHand: true, unitCost: true } });
+  const before = await tx.product.findUnique({
+    where: { id: i.productId },
+    select: { qtyOnHand: true, unitCost: true, dateIn: true },
+  });
+  // "Date in" follows the newest stock that arrives (returns from a voided sale don't count)
+  const dateIn =
+    i.source === "RETURN"
+      ? {}
+      : i.oldInventory
+        ? before?.dateIn
+          ? {}
+          : { oldInventory: true }
+        : !before?.dateIn || receivedAt > before.dateIn
+          ? { dateIn: receivedAt, oldInventory: false }
+          : {};
   const newCost =
     (i.costUpdate ?? "average") === "keep" || !before
       ? undefined
@@ -86,6 +110,7 @@ export async function receiveStock(
     data: {
       qtyOnHand: { increment: qty },
       ...(newCost !== undefined ? { unitCost: newCost } : {}),
+      ...dateIn,
     },
   });
   return { qty, unitCost, totalCost: round2(qty * unitCost) };
@@ -164,6 +189,9 @@ export async function adjustStock(
     unitCost?: number;
     reason: string;
     costUpdate?: "average" | "replace" | "keep";
+    /** When the added units came in (defaults to now). */
+    dateIn?: Date;
+    oldInventory?: boolean;
     method: CostingMethod;
     userName: string;
   }
@@ -182,6 +210,8 @@ export async function adjustStock(
       sourceRef: ref,
       note: i.reason,
       costUpdate: i.costUpdate ?? "average",
+      date: i.dateIn,
+      oldInventory: i.oldInventory,
     });
     value = res.totalCost;
   } else if (i.qtyChange < 0) {
