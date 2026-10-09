@@ -66,13 +66,18 @@ estimatesRouter.get(
     if (req.query.customerId) where.customerId = Number(req.query.customerId);
     const q = String(req.query.q || "").trim();
     if (q) where.OR = [{ estimateNo: { contains: q, mode: "insensitive" } }, { billTo: { contains: q, mode: "insensitive" } }];
-    const list = await req.db.estimate.findMany({
-      where,
-      orderBy: orderBy(req, ["date", "total", "estimateNo"] as const, "date"),
-      include: { customer: { select: { id: true, name: true } }, invoice: { select: { id: true, invoiceNo: true } } },
-      take: 500,
-    });
-    res.json(list);
+    const { take, skip, page, limit } = pageParams(req, 25);
+    const [items, total] = await Promise.all([
+      req.db.estimate.findMany({
+        where,
+        orderBy: orderBy(req, ["date", "total", "estimateNo"] as const, "date"),
+        include: { customer: { select: { id: true, name: true } }, invoice: { select: { id: true, invoiceNo: true } } },
+        take,
+        skip,
+      }),
+      req.db.estimate.count({ where }),
+    ]);
+    res.json({ items, total, page, limit });
   })
 );
 

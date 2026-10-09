@@ -294,6 +294,13 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal(inv.data.balance, r2(87.1 - 50));
   });
 
+  test("estimate list is paged", async () => {
+    const one = await call("GET", "/estimates?limit=1&page=1");
+    assert.equal(one.data.items.length, 1);
+    assert.ok(one.data.total >= 1);
+    assert.equal(one.data.limit, 1);
+  });
+
   test("invoice list says whether the sale needed an approval", async () => {
     const needed = await call("GET", "/invoices?approval=needed");
     assert.ok(needed.data.items.length >= 1);
@@ -502,7 +509,7 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     const none = await call("GET", "/invoices?cardType=NONE");
     assert.ok(none.data.items.every((i: Any) => i.cardType === null));
     const ests = await call("GET", "/estimates?cardType=DEBIT");
-    assert.ok(ests.data.length >= 1 && ests.data.every((e: Any) => e.cardType === "DEBIT"));
+    assert.ok(ests.data.items.length >= 1 && ests.data.items.every((e: Any) => e.cardType === "DEBIT"));
   });
 
   test("worker login: create estimates and see approvals, nothing else", async () => {
@@ -535,8 +542,8 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal(edit.status, 403);
     // …and it drops out of the worker's view entirely (not "ready to invoice" for them)
     const list = await w("GET", "/estimates?status=APPROVED");
-    assert.ok(list.data.every((e: Any) => e.status === "PENDING"));
-    assert.ok(!list.data.some((e: Any) => e.id === est.data.id));
+    assert.ok(list.data.items.every((e: Any) => e.status === "PENDING"));
+    assert.ok(!list.data.items.some((e: Any) => e.id === est.data.id));
     assert.equal((await w("GET", `/estimates/${est.data.id}`)).status, 404);
     assert.equal((await w("GET", `/estimates/${est.data.id}/pdf`)).status, 404);
   });
