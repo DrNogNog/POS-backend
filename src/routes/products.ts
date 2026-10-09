@@ -124,17 +124,37 @@ router.get(
       where.id = { in: lowStockIds };
     }
 
+    const include = {
+      category: { select: { id: true, name: true } },
+      supplier: { select: { id: true, name: true } },
+    };
+    const sortKey = String(req.query.sort || "");
+    const dir = req.query.dir === "desc" ? "desc" : "asc";
+
+    // Price out = the item's fixed price, or its cost x the chosen level's markup.
+    // That can't be sorted in one query, so: work out every matching item's
+    // price, sort, then load just the page being shown.
+    if (sortKey === "price") {
+      const tier = await req.db.priceTier.findUnique({ where: { code: String(req.query.tier || "D") } });
+      const markup = tier ? num(tier.markupPct) : 0;
+      const all = await req.db.product.findMany({ where, select: { id: true, itemCode: true, unitCost: true, sellPriceOverride: true } });
+      const priced = all
+        .map((p) => ({ id: p.id, code: p.itemCode, price: sellingPrice({ unitCost: num(p.unitCost), sellPriceOverride: p.sellPriceOverride === null ? null : num(p.sellPriceOverride) }, markup) }))
+        .sort((a, b) => (a.price - b.price || a.code.localeCompare(b.code)) * (dir === "asc" ? 1 : -1));
+      const ids = priced.slice(skip, skip + take).map((p) => p.id);
+      const rows = await req.db.product.findMany({ where: { id: { in: ids } }, include });
+      const byId = new Map(rows.map((r) => [r.id, r]));
+      return res.json({ items: ids.map((id) => byId.get(id)!), total: all.length, page, limit });
+    }
+
+    // Supplier: by supplier name (items without a supplier last), then item code
+    const orderByClause: Prisma.ProductOrderByWithRelationInput[] =
+      sortKey === "supplier"
+        ? [{ supplier: { name: dir } }, { itemCode: "asc" }]
+        : [sort as Prisma.ProductOrderByWithRelationInput];
+
     const [items, total] = await Promise.all([
-      req.db.product.findMany({
-        where,
-        take,
-        skip,
-        orderBy: sort,
-        include: {
-          category: { select: { id: true, name: true } },
-          supplier: { select: { id: true, name: true } },
-        },
-      }),
+      req.db.product.findMany({ where, take, skip, orderBy: orderByClause, include }),
       req.db.product.count({ where }),
     ]);
     res.json({ items, total, page, limit });

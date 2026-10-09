@@ -384,6 +384,26 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal(after.data.dateIn.slice(0, 10), "2026-10-01");
   });
 
+  test("items sort by supplier and by price", async () => {
+    await call("POST", "/products/import", {
+      rows: [
+        { itemCode: "ZS-1", name: "Sort A", supplier: "Zeta Supply", listPrice: 10 },
+        { itemCode: "ZS-2", name: "Sort B", supplier: "Alpha Supply", listPrice: 30 },
+        { itemCode: "ZS-3", name: "Sort C", supplier: "Alpha Supply", listPrice: 20 },
+      ],
+    });
+    const fixed = (await call("GET", "/products?q=ZS-1")).data.items[0];
+    // ZS-1 is cheap at cost but has a fixed selling price above the others
+    await call("PUT", `/products/${fixed.id}`, { sellPriceOverride: 999 });
+    const bySupplier = (await call("GET", "/products?q=ZS-&sort=supplier&dir=asc")).data.items.map((p: Any) => p.itemCode);
+    assert.deepEqual(bySupplier, ["ZS-2", "ZS-3", "ZS-1"]);
+    const byPrice = (await call("GET", "/products?q=ZS-&sort=price&dir=asc&tier=D")).data;
+    assert.deepEqual(byPrice.items.map((p: Any) => p.itemCode), ["ZS-3", "ZS-2", "ZS-1"]);
+    assert.equal(byPrice.total, 3);
+    const paged = (await call("GET", "/products?q=ZS-&sort=price&dir=desc&limit=1&page=2")).data.items.map((p: Any) => p.itemCode);
+    assert.deepEqual(paged, ["ZS-2"]);
+  });
+
   test("adding stock averages the cost in (or replaces / keeps it)", async () => {
     // 2 on hand at $10; add 2 at $20 → average $15
     const add = await call("POST", `/products/${ids.commit}/adjust`, { qtyChange: 2, unitCost: 20, reason: "Count" });
