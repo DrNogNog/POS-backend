@@ -7,7 +7,7 @@ import multer from "multer";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { allow } from "../middleware/auth.js";
-import { badRequest, idParam, notFound, parse, route, onlySent } from "../lib/http.js";
+import { HttpError, badRequest, idParam, notFound, parse, route, onlySent } from "../lib/http.js";
 import { diffFields, logActivity } from "../lib/history.js";
 import { num, round2 } from "../lib/money.js";
 import { netCost, sellingPrice, marginPct } from "../domain/pricing.js";
@@ -271,6 +271,18 @@ router.get(
 );
 
 // ---- Create / update ----------------------------------------------------------
+/** A clear message when an item code is already taken, instead of a database error. */
+async function assertCodeFree(tx: Prisma.TransactionClient, itemCode: string, exceptId?: number) {
+  const taken = await tx.product.findUnique({ where: { itemCode }, select: { id: true, name: true, deletedAt: true } });
+  if (!taken || taken.id === exceptId) return;
+  if (taken.deletedAt && exceptId === undefined) return; // a deleted item's code is reused on create
+  throw new HttpError(
+    409,
+    taken.deletedAt
+      ? `Item code ${itemCode} belonged to a deleted item. Use a different code, or add it with "New item".`
+      : `Item code ${itemCode} is already used by "${taken.name}". Find it in Items & stock to edit it or add stock, or use a different code.`
+  );
+}
 router.post(
   "/",
   allow("MANAGER"),
@@ -284,6 +296,7 @@ router.post(
     const product = await req.db.$transaction(async (tx) => {
       // An item code that belonged to a deleted item is reused: the old record
       // comes back with the new details (past invoices keep pointing at it).
+      await assertCodeFree(tx, data.itemCode);
       const gone = await tx.product.findFirst({ where: { itemCode: data.itemCode, deletedAt: { not: null } } });
       const p = gone
         ? await tx.product.update({
@@ -333,6 +346,7 @@ router.put(
     const product = await req.db.$transaction(async (tx) => {
       const before = await tx.product.findUnique({ where: { id } });
       if (!before) throw notFound("Product");
+      if (input.itemCode !== undefined && input.itemCode !== before.itemCode) await assertCodeFree(tx, input.itemCode, id);
       const images = [...before.images.filter((i) => !removeImages.includes(i)), ...files.map((f) => f.filename)];
       if (images.length > MAX_IMAGES) throw badRequest(`An item can have up to ${MAX_IMAGES} photos. Remove some first.`);
       // If list price or discount changed but cost wasn't typed, recompute cost.

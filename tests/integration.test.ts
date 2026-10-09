@@ -487,6 +487,9 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal((await call("DELETE", `/products/${made.data.id}`)).status, 404);
     const again = await call("POST", "/products", { itemCode: "ZT-DEL1", name: "Back again", unitCost: 5 });
     assert.equal(again.status, 201, JSON.stringify(again.data));
+    const dup = await call("POST", "/products", { itemCode: "zt-del1", name: "Duplicate", unitCost: 5 });
+    assert.equal(dup.status, 409);
+    assert.match(dup.data.error, /ZT-DEL1 is already used by "Back again"/);
     const back = (await call("GET", "/products?q=ZT-DEL1")).data.items;
     assert.equal(back.length, 1);
     assert.equal(back[0].name, "Back again");
