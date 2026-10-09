@@ -31,6 +31,7 @@ everything else come from that drive's own Settings, so stores never mix.
    that drive running:
    ```powershell
    npm run db:migrate   # creates the tables on this drive
+                        # (if Windows blocks Prisma's schema-engine: npm run db:migrate:direct)
    npm run seed         # chart of accounts, price levels AA–D, categories, tax, owner login
    ```
 4. **Load a price list** (optional) — from the web app: **Items & stock → Import price
