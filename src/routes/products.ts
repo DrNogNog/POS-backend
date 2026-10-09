@@ -56,7 +56,7 @@ const productSchema = z.object({
   categoryId: z.coerce.number().int().positive().optional().nullable(),
   supplierId: z.coerce.number().int().positive().optional().nullable(),
   collection: z.string().trim().default(""),
-  unit: z.string().trim().default("each"),
+  unit: z.string().trim().default("unit"),
   listPrice: z.coerce.number().min(0).default(0),
   supplierDiscountPct: z.coerce.number().min(0).max(100).default(0),
   unitCost: z.coerce.number().min(0).optional(),
@@ -374,7 +374,7 @@ const importRow = z.object({
   listPrice: z.coerce.number().min(0).default(0),
   supplierDiscountPct: z.coerce.number().min(0).max(100).default(0),
   unitCost: z.coerce.number().min(0).optional(),
-  unit: z.string().trim().default("each"),
+  unit: z.string().trim().default("unit"),
   qtyOnHand: z.coerce.number().min(0).optional(),
   /** "old" (or empty) = old inventory from before the POS; or a date like 2026-10-09 */
   dateIn: z
