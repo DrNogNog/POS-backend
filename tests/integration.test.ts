@@ -496,6 +496,28 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal(Number(back[0].qtyOnHand), 0);
   });
 
+  test("inventory search: company, date in, old inventory, cost and fixed price", async () => {
+    const sup = await call("POST", "/suppliers", { name: "Zeta Search Co" });
+    assert.equal(sup.status, 201, JSON.stringify(sup.data));
+    const a = await call("POST", "/products", { itemCode: "ZQ-1", name: "Search hinge", unitCost: 7.25, supplierId: sup.data.id, dateIn: "2026-03-14" });
+    const b = await call("POST", "/products", { itemCode: "ZQ-2", name: "Search knob", unitCost: 40, sellPriceOverride: 99, oldInventory: true });
+    assert.equal(a.status, 201, JSON.stringify(a.data));
+    assert.equal(b.status, 201, JSON.stringify(b.data));
+    const codes = async (qs: string) => (await call("GET", `/products?limit=500&${qs}`)).data.items.map((p: Any) => p.itemCode).filter((c: string) => c.startsWith("ZQ-"));
+    assert.deepEqual(await codes("q=zeta"), ["ZQ-1"]);
+    assert.deepEqual(await codes("q=zeta%20hinge"), ["ZQ-1"]);
+    assert.deepEqual(await codes("q=3/14/2026"), ["ZQ-1"]);
+    assert.deepEqual(await codes("q=2026-03"), ["ZQ-1"]);
+    assert.deepEqual(await codes("q=old%20inventory%20search"), ["ZQ-2"]);
+    assert.deepEqual(await codes("q=7.25"), ["ZQ-1"]);
+    assert.deepEqual(await codes("q=$99"), ["ZQ-2"]);
+    assert.deepEqual(await codes("costMin=7&costMax=8"), ["ZQ-1"]);
+    assert.deepEqual(await codes("fixedMin=90&fixedMax=100"), ["ZQ-2"]);
+    assert.deepEqual(await codes("q=search&fixed=yes"), ["ZQ-2"]);
+    assert.deepEqual(await codes("q=search&fixed=no"), ["ZQ-1"]);
+    assert.deepEqual(await codes(`supplierId=${sup.data.id}`), ["ZQ-1"]);
+  });
+
   test("the books balance", async () => {
     const tb = await call("GET", "/reports/trial-balance");
     assert.equal(tb.data.inBalance, true, JSON.stringify(tb.data.rows.filter((r: Any) => r.debit || r.credit)));

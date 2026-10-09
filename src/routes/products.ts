@@ -80,6 +80,52 @@ function dateInFilter(q: Record<string, unknown>): Prisma.ProductWhereInput {
   return { oldInventory: false, dateIn: { ...(from ? { gte: from } : {}), ...(to ? { lte: to } : {}) } };
 }
 
+/**
+ * The search box. Every word typed has to match something about the item:
+ * code, name, description, collection, unit, supplier (company), category,
+ * a date in (10/09/2026, 2026-10-09, 10/2026), "old" for old inventory, or a price.
+ */
+function searchWords(q: string): Prisma.ProductWhereInput[] {
+  const words: Prisma.ProductWhereInput[] = [];
+  let rest = q;
+  if (/\bold( inventory)?\b|before pos/i.test(rest)) {
+    words.push({ oldInventory: true });
+    rest = rest.replace(/\bold( inventory)?\b|before pos( system)?/gi, " ");
+  }
+  for (const w of rest.split(/\s+/).filter(Boolean)) {
+    const text = { contains: w, mode: "insensitive" as const };
+    const any: Prisma.ProductWhereInput[] = [
+      { itemCode: text },
+      { name: text },
+      { description: text },
+      { collection: text },
+      { unit: text },
+      { supplier: { name: text } },
+      { category: { name: text } },
+    ];
+    const range = dateWord(w);
+    if (range) any.push({ oldInventory: false, dateIn: { gte: range[0], lt: range[1] } });
+    const money = /^\$?\d+(\.\d{1,2})?$/.test(w) ? Number(w.replace("$", "")) : null;
+    if (money !== null) any.push({ unitCost: money }, { sellPriceOverride: money }, { listPrice: money });
+    words.push({ OR: any });
+  }
+  return words;
+}
+
+/** A typed date → [start, end) of that day or month, or null if it isn't a date. */
+function dateWord(w: string): [Date, Date] | null {
+  let y: number, m: number, d: number | null;
+  let hit = /^(\d{1,2})[/.-](\d{1,2})[/.-](\d{2}|\d{4})$/.exec(w); // 10/09/2026, 10-9-26
+  if (hit) [m, d, y] = [Number(hit[1]), Number(hit[2]), Number(hit[3])];
+  else if ((hit = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(w))) [y, m, d] = [Number(hit[1]), Number(hit[2]), Number(hit[3])];
+  else if ((hit = /^(\d{1,2})[/.-](\d{4})$/.exec(w))) [m, y, d] = [Number(hit[1]), Number(hit[2]), null]; // 10/2026
+  else if ((hit = /^(\d{4})-(\d{1,2})$/.exec(w))) [y, m, d] = [Number(hit[1]), Number(hit[2]), null]; // 2026-10
+  else return null;
+  if (y < 100) y += 2000;
+  if (m < 1 || m > 12 || (d !== null && (d < 1 || d > 31))) return null;
+  return d === null ? [new Date(y, m - 1, 1), new Date(y, m, 1)] : [new Date(y, m - 1, d), new Date(y, m - 1, d + 1)];
+}
+
 /** Multipart forms send everything as strings; turn "" into undefined. */
 function cleanForm(body: Record<string, unknown>) {
   const out: Record<string, unknown> = {};
@@ -100,16 +146,24 @@ router.get(
   route(async (req, res) => {
     const q = String(req.query.q || "").trim();
     const where: Prisma.ProductWhereInput = { deletedAt: null };
-    if (q) {
-      where.OR = [
-        { itemCode: { contains: q, mode: "insensitive" } },
-        { name: { contains: q, mode: "insensitive" } },
-        { description: { contains: q, mode: "insensitive" } },
-        { collection: { contains: q, mode: "insensitive" } },
-      ];
-    }
+    if (q) where.AND = searchWords(q);
     if (req.query.categoryId) where.categoryId = Number(req.query.categoryId);
-    if (req.query.supplierId) where.supplierId = Number(req.query.supplierId);
+    if (req.query.supplierId) where.supplierId = req.query.supplierId === "none" ? null : Number(req.query.supplierId);
+    // Price ranges: our cost (price in) and the fixed selling price
+    const amount = (k: string) => {
+      const v = req.query[k];
+      if (v === undefined || v === "") return undefined;
+      const x = Number(String(v).replace(/[$,]/g, ""));
+      return Number.isFinite(x) ? x : undefined;
+    };
+    const range = (min?: number, max?: number) =>
+      min === undefined && max === undefined ? undefined : { ...(min !== undefined ? { gte: min } : {}), ...(max !== undefined ? { lte: max } : {}) };
+    const cost = range(amount("costMin"), amount("costMax"));
+    if (cost) where.unitCost = cost;
+    const fixed = range(amount("fixedMin"), amount("fixedMax"));
+    if (fixed) where.sellPriceOverride = fixed;
+    if (req.query.fixed === "yes") where.AND = [...((where.AND as Prisma.ProductWhereInput[]) ?? []), { sellPriceOverride: { gt: 0 } }];
+    if (req.query.fixed === "no") where.AND = [...((where.AND as Prisma.ProductWhereInput[]) ?? []), { OR: [{ sellPriceOverride: null }, { sellPriceOverride: 0 }] }];
     if (req.query.collection) where.collection = String(req.query.collection);
     if (req.query.inStock === "true") where.qtyOnHand = { gt: 0 };
     Object.assign(where, dateInFilter(req.query));
