@@ -135,8 +135,9 @@ router.get(
     // order is the same on every computer:
     //   supplier — A→Z by name, ignoring capitals / extra spaces; no supplier last
     //   price    — the item's fixed price, or its cost x the chosen level's markup
+    //   fixedPrice — the item's fixed selling price; items without one last
     // Work out every matching item's sort value, sort, then load just this page.
-    if (sortKey === "supplier" || sortKey === "price") {
+    if (sortKey === "supplier" || sortKey === "price" || sortKey === "fixedPrice") {
       const tier =
         sortKey === "price" ? await req.db.priceTier.findUnique({ where: { code: String(req.query.tier || "D") } }) : null;
       const markup = tier ? num(tier.markupPct) : 0;
@@ -161,7 +162,14 @@ router.get(
               if (!sa !== !sb) return sa ? -1 : 1; // no supplier always last
               return sign * sa.localeCompare(sb, "en", { numeric: true, sensitivity: "base" }) || byCode(a, b);
             })
-          : [...all].sort((a, b) => sign * (priceOf(a) - priceOf(b)) || byCode(a, b));
+          : sortKey === "fixedPrice"
+            ? [...all].sort((a, b) => {
+                const fa = a.sellPriceOverride === null ? 0 : num(a.sellPriceOverride);
+                const fb = b.sellPriceOverride === null ? 0 : num(b.sellPriceOverride);
+                if (!fa !== !fb) return fa ? -1 : 1; // no fixed price always last
+                return sign * (fa - fb) || byCode(a, b);
+              })
+            : [...all].sort((a, b) => sign * (priceOf(a) - priceOf(b)) || byCode(a, b));
       const ids = sorted.slice(skip, skip + take).map((p) => p.id);
       const rows = await req.db.product.findMany({ where: { id: { in: ids } }, include });
       const byId = new Map(rows.map((r) => [r.id, r]));
