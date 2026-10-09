@@ -131,27 +131,44 @@ router.get(
     const sortKey = String(req.query.sort || "");
     const dir = req.query.dir === "desc" ? "desc" : "asc";
 
-    // Price out = the item's fixed price, or its cost x the chosen level's markup.
-    // That can't be sorted in one query, so: work out every matching item's
-    // price, sort, then load just the page being shown.
-    if (sortKey === "price") {
-      const tier = await req.db.priceTier.findUnique({ where: { code: String(req.query.tier || "D") } });
+    // Supplier and price are sorted here rather than by the database, so the
+    // order is the same on every computer:
+    //   supplier — A→Z by name, ignoring capitals / extra spaces; no supplier last
+    //   price    — the item's fixed price, or its cost x the chosen level's markup
+    // Work out every matching item's sort value, sort, then load just this page.
+    if (sortKey === "supplier" || sortKey === "price") {
+      const tier =
+        sortKey === "price" ? await req.db.priceTier.findUnique({ where: { code: String(req.query.tier || "D") } }) : null;
       const markup = tier ? num(tier.markupPct) : 0;
-      const all = await req.db.product.findMany({ where, select: { id: true, itemCode: true, unitCost: true, sellPriceOverride: true } });
-      const priced = all
-        .map((p) => ({ id: p.id, code: p.itemCode, price: sellingPrice({ unitCost: num(p.unitCost), sellPriceOverride: p.sellPriceOverride === null ? null : num(p.sellPriceOverride) }, markup) }))
-        .sort((a, b) => (a.price - b.price || a.code.localeCompare(b.code)) * (dir === "asc" ? 1 : -1));
-      const ids = priced.slice(skip, skip + take).map((p) => p.id);
+      const all = await req.db.product.findMany({
+        where,
+        select: { id: true, itemCode: true, unitCost: true, sellPriceOverride: true, supplier: { select: { name: true } } },
+      });
+      const sign = dir === "asc" ? 1 : -1;
+      const byCode = (a: { itemCode: string }, b: { itemCode: string }) =>
+        a.itemCode.localeCompare(b.itemCode, "en", { numeric: true, sensitivity: "base" });
+      const supplierOf = (p: (typeof all)[number]) => (p.supplier?.name ?? "").trim().replace(/\s+/g, " ");
+      const priceOf = (p: (typeof all)[number]) =>
+        sellingPrice(
+          { unitCost: num(p.unitCost), sellPriceOverride: p.sellPriceOverride === null ? null : num(p.sellPriceOverride) },
+          markup
+        );
+      const sorted =
+        sortKey === "supplier"
+          ? [...all].sort((a, b) => {
+              const sa = supplierOf(a);
+              const sb = supplierOf(b);
+              if (!sa !== !sb) return sa ? -1 : 1; // no supplier always last
+              return sign * sa.localeCompare(sb, "en", { numeric: true, sensitivity: "base" }) || byCode(a, b);
+            })
+          : [...all].sort((a, b) => sign * (priceOf(a) - priceOf(b)) || byCode(a, b));
+      const ids = sorted.slice(skip, skip + take).map((p) => p.id);
       const rows = await req.db.product.findMany({ where: { id: { in: ids } }, include });
       const byId = new Map(rows.map((r) => [r.id, r]));
       return res.json({ items: ids.map((id) => byId.get(id)!), total: all.length, page, limit });
     }
 
-    // Supplier: by supplier name (items without a supplier last), then item code
-    const orderByClause: Prisma.ProductOrderByWithRelationInput[] =
-      sortKey === "supplier"
-        ? [{ supplier: { name: dir } }, { itemCode: "asc" }]
-        : [sort as Prisma.ProductOrderByWithRelationInput];
+    const orderByClause: Prisma.ProductOrderByWithRelationInput[] = [sort as Prisma.ProductOrderByWithRelationInput];
 
     const [items, total] = await Promise.all([
       req.db.product.findMany({ where, take, skip, orderBy: orderByClause, include }),

@@ -397,9 +397,22 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     await call("PUT", `/products/${fixed.id}`, { sellPriceOverride: 999 });
     const bySupplier = (await call("GET", "/products?q=ZS-&sort=supplier&dir=asc")).data.items.map((p: Any) => p.itemCode);
     assert.deepEqual(bySupplier, ["ZS-2", "ZS-3", "ZS-1"]);
+    // Capitals, extra spaces, numbers and missing suppliers don't upset the order
+    await call("POST", "/products/import", {
+      rows: [
+        { itemCode: "ZS-4", name: "Sort D", supplier: "grip rite", listPrice: 5 },
+        { itemCode: "ZS-5", name: "Sort E", supplier: "  Brightway  Electric", listPrice: 5 },
+        { itemCode: "ZS-6", name: "Sort F", listPrice: 5 },
+        { itemCode: "ZS-7", name: "Sort G", supplier: "3M", listPrice: 5 },
+      ],
+    });
+    const names = async (dir: string) =>
+      (await call("GET", `/products?q=ZS-&sort=supplier&dir=${dir}`)).data.items.map((p: Any) => p.supplier?.name?.trim() ?? "(none)");
+    assert.deepEqual(await names("asc"), ["3M", "Alpha Supply", "Alpha Supply", "Brightway  Electric", "grip rite", "Zeta Supply", "(none)"]);
+    assert.deepEqual(await names("desc"), ["Zeta Supply", "grip rite", "Brightway  Electric", "Alpha Supply", "Alpha Supply", "3M", "(none)"]);
     const byPrice = (await call("GET", "/products?q=ZS-&sort=price&dir=asc&tier=D")).data;
-    assert.deepEqual(byPrice.items.map((p: Any) => p.itemCode), ["ZS-3", "ZS-2", "ZS-1"]);
-    assert.equal(byPrice.total, 3);
+    assert.deepEqual(byPrice.items.slice(-3).map((p: Any) => p.itemCode), ["ZS-3", "ZS-2", "ZS-1"]);
+    assert.equal(byPrice.total, 7);
     const paged = (await call("GET", "/products?q=ZS-&sort=price&dir=desc&limit=1&page=2")).data.items.map((p: Any) => p.itemCode);
     assert.deepEqual(paged, ["ZS-2"]);
   });
