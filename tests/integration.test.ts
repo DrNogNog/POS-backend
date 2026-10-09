@@ -456,6 +456,84 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.deepEqual(res.data, { created: 1, updated: 1 });
   });
 
+  test("credit or debit is recorded on estimates and invoices, and can be filtered", async () => {
+    const line = [{ description: "Install labor", qty: 1, unitPrice: 100 }];
+    const est = await call("POST", "/estimates", { customerId: ids.walkIn, cardType: "DEBIT", lines: line });
+    assert.equal(est.status, 201, JSON.stringify(est.data));
+    assert.equal(est.data.cardType, "DEBIT");
+    // Approved → invoiced: the invoice keeps the estimate's card type
+    await call("POST", `/estimates/${est.data.id}/status`, { status: "APPROVED" });
+    const inv = await call("POST", `/estimates/${est.data.id}/invoice`, {});
+    assert.equal(inv.status, 201, JSON.stringify(inv.data));
+    assert.equal(inv.data.cardType, "DEBIT");
+    // A card payment at the counter fills it in when it wasn't chosen
+    const sale = await call("POST", "/invoices", { customerId: ids.walkIn, lines: line, payment: { amount: 10, method: "CREDIT" } });
+    assert.equal(sale.data.cardType, "CREDIT");
+    const credit = await call("GET", "/invoices?cardType=CREDIT");
+    assert.ok(credit.data.items.length >= 1 && credit.data.items.every((i: Any) => i.cardType === "CREDIT"));
+    const debit = await call("GET", "/invoices?cardType=DEBIT");
+    assert.ok(debit.data.items.some((i: Any) => i.id === inv.data.id));
+    const none = await call("GET", "/invoices?cardType=NONE");
+    assert.ok(none.data.items.every((i: Any) => i.cardType === null));
+    const ests = await call("GET", "/estimates?cardType=DEBIT");
+    assert.ok(ests.data.length >= 1 && ests.data.every((e: Any) => e.cardType === "DEBIT"));
+  });
+
+  test("worker login: create estimates and see approvals, nothing else", async () => {
+    // Workers come from .env (set up by seed / server start), not the users screen
+    const add = await call("POST", "/auth/users", { email: "w2@test.local", name: "Another", role: "WORKER", password: "worker-pass-2" });
+    assert.equal(add.status, 400);
+    assert.match(add.data.error, /\.env/);
+    const login = await api.call("POST", "/auth/login", { body: { email: "worker@test.local", password: "worker-pass-1" } });
+    assert.equal(login.status, 200);
+    const w = (m: string, u: string, body?: unknown) => api.call(m, u, { body, token: login.data.token });
+    // Allowed
+    assert.equal((await w("GET", "/settings")).status, 200);
+    assert.equal((await w("GET", "/products?q=W")).status, 200);
+    assert.equal((await w("GET", "/customers?q=walk")).status, 200);
+    const est = await w("POST", "/estimates", { customerId: ids.walkIn, cardType: "CREDIT", lines: [{ description: "Measure", qty: 1, unitPrice: 40 }] });
+    assert.equal(est.status, 201, JSON.stringify(est.data));
+    assert.equal(est.data.createdBy, "Shop Worker");
+    assert.equal((await w("GET", "/estimates?status=PENDING")).status, 200);
+    assert.equal((await w("GET", `/estimates/${est.data.id}/pdf`)).status, 200);
+    // Not allowed: approving, invoicing, selling, the books
+    assert.equal((await w("POST", `/estimates/${est.data.id}/status`, { status: "APPROVED" })).status, 403);
+    assert.equal((await w("POST", `/estimates/${est.data.id}/invoice`, {})).status, 403);
+    assert.equal((await w("POST", "/invoices", { customerId: ids.walkIn, lines: [{ description: "x", qty: 1, unitPrice: 1 }] })).status, 403);
+    for (const url of ["/invoices", "/reports/dashboard", "/receivables", "/payroll/employees", "/history", `/products/${ids.product}`, "/costing"]) {
+      assert.equal((await w("GET", url)).status, 403, url);
+    }
+    // Once the admin approves it, the worker can no longer change it
+    await call("POST", `/estimates/${est.data.id}/status`, { status: "APPROVED" });
+    const edit = await w("PUT", `/estimates/${est.data.id}`, { customerId: ids.walkIn, lines: [{ description: "Measure", qty: 2, unitPrice: 40 }] });
+    assert.equal(edit.status, 403);
+    // …and it drops out of the worker's view entirely (not "ready to invoice" for them)
+    const list = await w("GET", "/estimates?status=APPROVED");
+    assert.ok(list.data.every((e: Any) => e.status === "PENDING"));
+    assert.ok(!list.data.some((e: Any) => e.id === est.data.id));
+    assert.equal((await w("GET", `/estimates/${est.data.id}`)).status, 404);
+    assert.equal((await w("GET", `/estimates/${est.data.id}/pdf`)).status, 404);
+  });
+
+  test("the worker login follows .env", async () => {
+    const { syncWorkerLogin } = await import("../src/services/workerLogin.js");
+    const { getDb } = await import("../src/db/stores.js");
+    const login = (password: string) => api.call("POST", "/auth/login", { body: { email: "worker@test.local", password } });
+    process.env.WORKER_PASSWORD = "a-new-worker-pass";
+    assert.match(await syncWorkerLogin(getDb()), /updated/);
+    assert.equal((await login("worker-pass-1")).status, 401);
+    assert.equal((await login("a-new-worker-pass")).status, 200);
+    // Taken out of .env → switched off
+    const saved = process.env.WORKER_EMAIL;
+    delete process.env.WORKER_EMAIL;
+    await syncWorkerLogin(getDb());
+    assert.equal((await login("a-new-worker-pass")).status, 401);
+    process.env.WORKER_EMAIL = saved;
+    process.env.WORKER_PASSWORD = "worker-pass-1";
+    await syncWorkerLogin(getDb());
+    assert.equal((await login("worker-pass-1")).status, 200);
+  });
+
   test("roles: cashier can sell but not run payroll", async () => {
     await call("POST", "/auth/users", { email: "cash@test.local", name: "Cashier", role: "CASHIER", password: "cashier-pass-1" });
     const login = await api.call("POST", "/auth/login", { body: { email: "cash@test.local", password: "cashier-pass-1" } });

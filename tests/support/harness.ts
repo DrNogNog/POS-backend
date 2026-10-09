@@ -20,6 +20,9 @@ process.env.JWT_SECRET = "test-secret-test-secret-test-secret-123456";
 process.env.OWNER_EMAIL = "owner@test.local";
 process.env.OWNER_PASSWORD = "correct-horse-battery";
 process.env.OWNER_NAME = "Test Owner";
+process.env.WORKER_NAME = "Shop Worker";
+process.env.WORKER_EMAIL = "worker@test.local";
+process.env.WORKER_PASSWORD = "worker-pass-1";
 
 export async function startApi() {
   const require = createRequire(import.meta.url);

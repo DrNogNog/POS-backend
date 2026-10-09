@@ -8,7 +8,7 @@
 // and writes a History line — all in ONE database transaction, so nothing can
 // be half-done (e.g. stock taken out but no invoice saved).
 // -----------------------------------------------------------------------------
-import type { Fulfillment, PaymentMethod, Prisma } from "@prisma/client";
+import type { CardType, Fulfillment, PaymentMethod, Prisma } from "@prisma/client";
 import type { Tx } from "../db/stores.js";
 import type { AuthUser } from "../middleware/auth.js";
 import { badRequest, notFound } from "../lib/http.js";
@@ -51,6 +51,8 @@ export interface DocumentInput {
   shipTo?: string;
   phone?: string;
   fax?: string;
+  /** Paying by credit or debit card. */
+  cardType?: CardType | null;
   fulfillment?: Fulfillment;
   priceTierCode?: string;
   discountAmount?: number;
@@ -118,6 +120,7 @@ export async function saveEstimate(
     shipTo: input.shipTo ?? "",
     phone: input.phone || customer?.phone || "",
     fax: input.fax || customer?.fax || "",
+    cardType: input.cardType ?? null,
     fulfillment: input.fulfillment ?? "PICKUP",
     priceTierCode: input.priceTierCode ?? "AA",
     subtotal: totals.subtotal,
@@ -265,6 +268,8 @@ export async function createInvoice(tx: Tx, input: InvoiceInput, user: AuthUser)
       shipTo: input.shipTo ?? customer?.shippingAddress ?? "",
       phone: input.phone || customer?.phone || "",
       fax: input.fax || customer?.fax || "",
+      // Credit or debit: as chosen, else from a card payment taken at the counter
+      cardType: input.cardType ?? cardTypeOf(input.payment?.method),
       fulfillment: input.fulfillment ?? customer?.fulfillment ?? "PICKUP",
       salesperson: input.salesperson || user.name,
       priceTierCode: input.priceTierCode ?? "",
@@ -360,6 +365,7 @@ export async function invoiceFromEstimate(
       shipTo: est.shipTo,
       phone: est.phone,
       fax: est.fax,
+      cardType: est.cardType,
       fulfillment: est.fulfillment,
       priceTierCode: est.priceTierCode,
       discountAmount: num(est.discountAmount),
@@ -401,6 +407,11 @@ function openItemOf(inv: {
     earlyPayDiscountPct: num(inv.earlyPayDiscountPct),
     earlyPayDiscountDays: inv.earlyPayDiscountDays,
   };
+}
+
+/** CREDIT / DEBIT payment methods map to the card type; others don't. */
+export function cardTypeOf(method?: PaymentMethod | null): CardType | null {
+  return method === "CREDIT" || method === "DEBIT" ? method : null;
 }
 
 export async function recordCustomerPayment(
@@ -453,6 +464,8 @@ export async function recordCustomerPayment(
       amountPaid: after.amountPaid,
       discountsTaken: after.discountsTaken,
       status: statusFor(after),
+      // First card payment on an invoice without credit/debit recorded fills it in
+      ...(!inv.cardType && cardTypeOf(p.method) ? { cardType: cardTypeOf(p.method) } : {}),
     },
   });
   await postEntry(tx, {

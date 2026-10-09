@@ -3,7 +3,7 @@ import { Router } from "express";
 import { z } from "zod";
 import type { Prisma } from "@prisma/client";
 import { allow, BOOKKEEPERS } from "../middleware/auth.js";
-import { idParam, notFound, parse, route } from "../lib/http.js";
+import { forbidden, idParam, notFound, parse, route } from "../lib/http.js";
 import { num } from "../lib/money.js";
 import {
   addInvoiceLateFee,
@@ -44,13 +44,25 @@ const documentSchema = z.object({
   lines: z.array(lineSchema).min(1, "Add at least one line item"),
   /** Save an estimate even if stock (after other estimates) is short. */
   allowShortage: z.boolean().default(false),
+  /** Paying by credit or debit card. */
+  cardType: z.enum(["CREDIT", "DEBIT"]).nullable().optional(),
 });
+
+/** ?cardType=CREDIT | DEBIT | NONE (not recorded) */
+function cardTypeFilter(raw: unknown): { cardType?: "CREDIT" | "DEBIT" | null } {
+  const v = String(raw || "").toUpperCase();
+  if (v === "CREDIT" || v === "DEBIT") return { cardType: v };
+  if (v === "NONE") return { cardType: null };
+  return {};
+}
 
 estimatesRouter.get(
   "/",
   route(async (req, res) => {
-    const where: Prisma.EstimateWhereInput = {};
+    const where: Prisma.EstimateWhereInput = { ...cardTypeFilter(req.query.cardType) };
     if (req.query.status) where.status = String(req.query.status) as never;
+    // Workers only ever see estimates still waiting for approval
+    if (req.user.role === "WORKER") where.status = "PENDING";
     if (req.query.customerId) where.customerId = Number(req.query.customerId);
     const q = String(req.query.q || "").trim();
     if (q) where.OR = [{ estimateNo: { contains: q, mode: "insensitive" } }, { billTo: { contains: q, mode: "insensitive" } }];
@@ -72,6 +84,7 @@ estimatesRouter.get(
       include: { lines: { orderBy: { sortOrder: "asc" } }, customer: true, invoice: { select: { id: true, invoiceNo: true } } },
     });
     if (!est) throw notFound("Estimate");
+    if (req.user.role === "WORKER" && est.status !== "PENDING") throw notFound("Estimate");
     res.json(est);
   })
 );
@@ -89,6 +102,10 @@ estimatesRouter.put(
   "/:id",
   route(async (req, res) => {
     const input = parse(documentSchema, req.body);
+    if (req.user.role === "WORKER") {
+      const est = await req.db.estimate.findUnique({ where: { id: idParam(req) }, select: { status: true } });
+      if (est && est.status !== "PENDING") throw forbidden("Only estimates still waiting for approval can be changed.");
+    }
     const est = await req.db.$transaction((tx) => saveEstimate(tx, { ...input, id: idParam(req) }, req.user));
     res.json(est);
   })
@@ -128,6 +145,7 @@ estimatesRouter.get(
       include: { lines: { orderBy: { sortOrder: "asc" } } },
     });
     if (!est) throw notFound("Estimate");
+    if (req.user.role === "WORKER" && est.status !== "PENDING") throw notFound("Estimate");
     const totals: [string, number, boolean?][] = [["Subtotal", num(est.subtotal)]];
     if (num(est.discountAmount) > 0) totals.push(["Discount", -num(est.discountAmount)]);
     totals.push([`Tax (${num(est.taxRatePct)}%)`, num(est.taxAmount)], ["TOTAL", num(est.total), true]);
@@ -164,7 +182,7 @@ export const invoicesRouter = Router();
 invoicesRouter.get(
   "/",
   route(async (req, res) => {
-    const where: Prisma.InvoiceWhereInput = {};
+    const where: Prisma.InvoiceWhereInput = { ...cardTypeFilter(req.query.cardType) };
     const status = String(req.query.status || "");
     if (status === "UNPAID") where.status = { in: ["OPEN", "PARTIAL"] };
     else if (status) where.status = status as never;

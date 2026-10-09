@@ -40,7 +40,9 @@ router.get(
 );
 
 // ---- Users ----------------------------------------------------
+// The worker login is set in .env (WORKER_EMAIL / WORKER_PASSWORD), not here
 const roles = z.enum(["OWNER", "MANAGER", "ACCOUNTANT", "CASHIER"]);
+const ENV_WORKER = "The worker login is set in the .env file (WORKER_EMAIL / WORKER_PASSWORD), not on this screen.";
 const userSchema = z.object({
   email: z.string().trim().toLowerCase().email(),
   name: z.string().trim().min(1),
@@ -69,6 +71,7 @@ router.post(
   requireAuth,
   allow(),
   route(async (req, res) => {
+    if (req.body?.role === "WORKER") throw badRequest(ENV_WORKER);
     const input = parse(userSchema, req.body);
     if (!input.password) throw badRequest("Password is required for a new user");
     const user = await req.db.$transaction(async (tx) => {
@@ -102,8 +105,11 @@ router.put(
   allow(),
   route(async (req, res) => {
     const id = idParam(req);
+    if (req.body?.role === "WORKER") throw badRequest(ENV_WORKER);
     const input = parse(userSchema.partial(), req.body);
     if (id === req.user.id && input.active === false) throw badRequest("You can't deactivate yourself");
+    const target = await req.db.user.findUnique({ where: { id }, select: { role: true } });
+    if (target?.role === "WORKER") throw badRequest(ENV_WORKER);
     const user = await req.db.$transaction(async (tx) => {
       const updated = await tx.user.update({
         where: { id },

@@ -6,7 +6,7 @@ import express, { type NextFunction, type Request, type Response } from "express
 import cors from "cors";
 import path from "path";
 import { env } from "./config/env.js";
-import { attachDb, requireAuth } from "./middleware/auth.js";
+import { attachDb, requireAuth, workerGate } from "./middleware/auth.js";
 import { errorHandler } from "./lib/http.js";
 
 import authRoutes from "./routes/auth.js";
@@ -68,7 +68,7 @@ export function createApp() {
 
   // ---- Everything below needs a login ----
   const secured = express.Router();
-  secured.use(attachDb, requireAuth);
+  secured.use(attachDb, requireAuth, workerGate);
 
   secured.use("/settings", settingsRoutes); // store info, tax, price tiers, item codes
   secured.use("/products", productRoutes); // inventory

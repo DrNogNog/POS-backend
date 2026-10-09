@@ -19,6 +19,9 @@ everything else come from that drive's own Settings, so stores never mix.
    - a long random `JWT_SECRET`. Generate one with
      `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`
    - `OWNER_EMAIL` / `OWNER_PASSWORD` (10+ characters) for the first login
+   - `WORKER_EMAIL` / `WORKER_PASSWORD` (8+ characters) for the worker login — it can only
+     create estimates and see the approvals list. It's applied every time the server
+     starts, so change it here (not in Settings) and restart
    - `STORE_NAME`, `TAX_NAME`, `TAX_RATE` for a new drive (change later in Settings)
 2. **Install packages:**
    ```powershell

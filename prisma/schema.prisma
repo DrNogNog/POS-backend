@@ -111,6 +111,7 @@ enum Role {
   MANAGER // everything except users
   ACCOUNTANT // books, A/R, A/P, payroll, reports
   CASHIER // sales, customers, look up inventory
+  WORKER // creates estimates and sees the approvals list — nothing else
 }
 
 // -----------------------------------------------------------------------------
@@ -305,6 +306,7 @@ model Estimate {
   shipTo      String      @default("")
   phone       String      @default("") // customer phone printed on the document
   fax         String      @default("") // customer fax printed on the document
+  cardType    CardType? // paying by credit or debit card
   fulfillment Fulfillment @default(PICKUP)
   priceTierCode String    @default("AA")
 
@@ -361,6 +363,7 @@ model Invoice {
   shipTo      String      @default("")
   phone       String      @default("") // customer phone printed on the document
   fax         String      @default("") // customer fax printed on the document
+  cardType    CardType? // paying by credit or debit card
   fulfillment Fulfillment @default(PICKUP)
   salesperson String      @default("")
   priceTierCode String    @default("") // price level the sale was priced at (AA, A, B…)
@@ -441,6 +444,12 @@ model CustomerPayment {
   notes         String        @default("")
   createdBy     String        @default("")
   createdAt     DateTime      @default(now())
+}
+
+/** How the customer is paying, recorded on estimates (and approvals) and invoices. */
+enum CardType {
+  CREDIT
+  DEBIT
 }
 
 enum PaymentMethod {

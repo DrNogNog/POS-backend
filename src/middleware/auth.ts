@@ -78,5 +78,34 @@ export function allow(...roles: Role[]) {
   };
 }
 
+/**
+ * Worker logins can only make estimates and look at the approvals list.
+ * Everything a worker may call is listed here; anything else is refused,
+ * whatever the screen shows. (Approving and invoicing stay with the
+ * owner / manager / cashier logins.)
+ */
+const WORKER_ALLOWED: [method: string, path: RegExp][] = [
+  ["GET", /^\/settings$/], // tax rates and price levels for pricing the estimate
+  ["GET", /^\/products$/], // item search
+  ["GET", /^\/products\/availability$/], // stock on hand / promised
+  ["GET", /^\/customers$/],
+  ["GET", /^\/customers\/\d+$/],
+  ["POST", /^\/customers$/], // add a walk-in customer
+  ["PUT", /^\/customers\/\d+$/],
+  ["GET", /^\/estimates$/], // the approvals list
+  ["GET", /^\/estimates\/\d+$/],
+  ["GET", /^\/estimates\/\d+\/pdf$/],
+  ["POST", /^\/estimates$/], // create an estimate
+  ["PUT", /^\/estimates\/\d+$/], // change one still waiting for approval (checked in the route)
+];
+
+export function workerGate(req: Request, res: Response, next: NextFunction) {
+  if (req.user?.role !== "WORKER") return next();
+  const path = req.path.replace(/\/+$/, "") || "/";
+  const ok = WORKER_ALLOWED.some(([m, re]) => m === req.method && re.test(path));
+  if (ok) return next();
+  return res.status(403).json({ error: "Worker logins can only create estimates and view approvals." });
+}
+
 /** Roles that can see and change the books. */
 export const BOOKKEEPERS: Role[] = ["MANAGER", "ACCOUNTANT"];

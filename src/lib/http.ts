@@ -16,6 +16,7 @@ export class HttpError extends Error {
 
 export const badRequest = (msg: string) => new HttpError(400, msg);
 export const notFound = (what = "Record") => new HttpError(404, `${what} not found`);
+export const forbidden = (msg = "Your role is not allowed to do this.") => new HttpError(403, msg);
 
 /** Wrap an async route so thrown errors go to the error handler. */
 export function route(

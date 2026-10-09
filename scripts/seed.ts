@@ -13,6 +13,7 @@
 import bcrypt from "bcryptjs";
 import { pathToFileURL } from "url";
 import { describeDatabase, getDb, disconnectAll } from "../src/db/stores.js";
+import { syncWorkerLogin } from "../src/services/workerLogin.js";
 import { CHART_OF_ACCOUNTS } from "../src/domain/accounts.js";
 
 const PRICE_TIERS = [
@@ -85,6 +86,7 @@ export async function seedStore() {
   } else {
     console.log("  (Set OWNER_EMAIL and OWNER_PASSWORD in .env to create the first login.)");
   }
+  console.log(`  ${await syncWorkerLogin(db)}`);
   console.log("  Done.");
 }
 
