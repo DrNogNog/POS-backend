@@ -12,6 +12,7 @@
     "db:new-migration": "prisma migrate dev",
     "db:migrate": "tsx scripts/migrate-all.ts",
     "db:migrate:direct": "tsx scripts/migrate-direct.ts",
+    "owner:reset": "tsx scripts/reset-owner.ts",
     "db:generate": "prisma generate",
     "seed": "tsx scripts/seed.ts",
     "import:pricelist": "tsx scripts/import-pricelist.ts",
