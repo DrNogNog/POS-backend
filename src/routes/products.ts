@@ -546,7 +546,7 @@ router.post(
         categories.set(c.name.toLowerCase(), c.id);
       }
       if (r.supplier && !suppliers.has(r.supplier.toLowerCase())) {
-        const s = await req.db.supplier.create({ data: { name: r.supplier } });
+        const s = await req.db.supplier.create({ data: { name: r.supplier, paymentTermsDays: 0 } });
         suppliers.set(s.name.toLowerCase(), s.id);
       }
     }

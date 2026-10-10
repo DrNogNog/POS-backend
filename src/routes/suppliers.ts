@@ -16,7 +16,7 @@ const supplierSchema = z.object({
   email: z.string().trim().default(""),
   address: z.string().trim().default(""),
   accountNumber: z.string().trim().default(""),
-  paymentTermsDays: z.coerce.number().int().min(0).max(365).default(30),
+  paymentTermsDays: z.coerce.number().int().min(0).max(365).default(0),
   tradeDiscountPct: z.coerce.number().min(0).max(100).default(0),
   earlyPayDiscountPct: z.coerce.number().min(0).max(100).default(0),
   earlyPayDiscountDays: z.coerce.number().int().min(0).max(365).default(0),
@@ -113,7 +113,7 @@ router.post(
         entityId: s.id,
         entityRef: s.name,
         action: "CREATED",
-        summary: `Supplier ${s.name} added (net ${s.paymentTermsDays})`,
+        summary: `Supplier ${s.name} added (${s.paymentTermsDays > 0 ? `net ${s.paymentTermsDays}` : "due on receipt"})`,
         userName: req.user.name,
       });
       return s;

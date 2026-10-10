@@ -49,7 +49,7 @@ async function main() {
       catIds.set(r.category, c.id);
     }
     if (r.supplier && !supIds.has(r.supplier)) {
-      const s = await db.supplier.upsert({ where: { name: r.supplier }, create: { name: r.supplier }, update: {} });
+      const s = await db.supplier.upsert({ where: { name: r.supplier }, create: { name: r.supplier, paymentTermsDays: 0 }, update: {} });
       supIds.set(r.supplier, s.id);
     }
   }
