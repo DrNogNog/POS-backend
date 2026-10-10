@@ -1,8 +1,9 @@
 // Suppliers: contact info, contract terms (15/30/45 days), discounts, late fees.
 import { Router } from "express";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { allow } from "../middleware/auth.js";
-import { idParam, notFound, parse, route, onlySent } from "../lib/http.js";
+import { HttpError, badRequest, idParam, notFound, parse, route, onlySent } from "../lib/http.js";
 import { diffFields, logActivity } from "../lib/history.js";
 import { num, round2 } from "../lib/money.js";
 import { presentBill } from "../services/purchasing.js";
@@ -35,7 +36,11 @@ router.get(
   route(async (req, res) => {
     const q = String(req.query.q || "").trim();
     const suppliers = await req.db.supplier.findMany({
-      where: q ? { name: { contains: q, mode: "insensitive" } } : {},
+      // Deleted (inactive) suppliers are left out unless ?all=1
+      where: {
+        ...(q ? { name: { contains: q, mode: "insensitive" as const } } : {}),
+        ...(req.query.all === "1" ? {} : { active: true }),
+      },
       orderBy: { name: "asc" },
       include: { _count: { select: { products: true } } },
     });
@@ -107,7 +112,12 @@ router.post(
   route(async (req, res) => {
     const input = parse(supplierSchema, req.body);
     const supplier = await req.db.$transaction(async (tx) => {
-      const s = await tx.supplier.create({ data: input });
+      // A deleted supplier's name can be used again: that record comes back with the new details
+      const same = await tx.supplier.findFirst({ where: { name: { equals: input.name, mode: "insensitive" } } });
+      if (same?.active) throw new HttpError(409, `There is already a supplier called "${same.name}".`);
+      const s = same
+        ? await tx.supplier.update({ where: { id: same.id }, data: { ...input, active: true } })
+        : await tx.supplier.create({ data: input });
       await logActivity(tx, {
         entityType: "Supplier",
         entityId: s.id,
@@ -147,6 +157,70 @@ router.put(
       return after;
     });
     res.json(supplier);
+  })
+);
+
+/** What deleting this supplier would do — shown in the confirm box. */
+async function deleteCheck(db: Prisma.TransactionClient, id: number) {
+  const supplier = await db.supplier.findUnique({ where: { id } });
+  if (!supplier) throw notFound("Supplier");
+  const [items, orders, waiting, bills, payments, open] = await Promise.all([
+    db.product.count({ where: { supplierId: id, deletedAt: null } }),
+    db.purchaseOrder.count({ where: { supplierId: id } }),
+    db.purchaseOrder.count({ where: { supplierId: id, status: "ORDERED" } }),
+    db.supplierBill.count({ where: { supplierId: id } }),
+    db.supplierPayment.count({ where: { supplierId: id } }),
+    db.supplierBill.findMany({ where: { supplierId: id, status: { in: ["OPEN", "PARTIAL"] } } }),
+  ]);
+  const owed = round2(open.map((b) => presentBill(b)).reduce((t, b) => t + b.balance, 0));
+  const hasHistory = orders + bills + payments > 0;
+  const blockedBy =
+    owed > 0
+      ? `We still owe ${supplier.name} $${owed.toFixed(2)}. Pay or void the open bills first.`
+      : waiting > 0
+        ? `${waiting} purchase order${waiting === 1 ? " is" : "s are"} still waiting for delivery from ${supplier.name}. Receive or cancel ${waiting === 1 ? "it" : "them"} first.`
+        : null;
+  return { supplier, items, orders, bills, payments, owed, hasHistory, blockedBy };
+}
+
+router.get(
+  "/:id/delete-check",
+  allow("MANAGER", "ACCOUNTANT"),
+  route(async (req, res) => {
+    const c = await deleteCheck(req.db, idParam(req));
+    res.json({ name: c.supplier.name, items: c.items, orders: c.orders, bills: c.bills, payments: c.payments, owed: c.owed, keepsHistory: c.hasHistory, blockedBy: c.blockedBy });
+  })
+);
+
+/**
+ * Delete a supplier. Its items are kept but no longer show a supplier.
+ * A supplier we've never ordered from is removed completely; one with purchase
+ * orders, bills or payments is taken off every list but kept so that history,
+ * A/P and the books still show it. Refused while we owe them money or an order
+ * is still waiting for delivery.
+ */
+router.delete(
+  "/:id",
+  allow("MANAGER", "ACCOUNTANT"),
+  route(async (req, res) => {
+    const id = idParam(req);
+    await req.db.$transaction(async (tx) => {
+      const c = await deleteCheck(tx, id);
+      if (!c.supplier.active && c.hasHistory) throw notFound("Supplier");
+      if (c.blockedBy) throw badRequest(c.blockedBy);
+      await tx.product.updateMany({ where: { supplierId: id }, data: { supplierId: null } });
+      if (c.hasHistory) await tx.supplier.update({ where: { id }, data: { active: false } });
+      else await tx.supplier.delete({ where: { id } });
+      await logActivity(tx, {
+        entityType: "Supplier",
+        entityId: id,
+        entityRef: c.supplier.name,
+        action: "DELETED",
+        summary: `Supplier ${c.supplier.name} deleted${c.items ? ` (${c.items} item${c.items === 1 ? "" : "s"} no longer linked)` : ""}${c.hasHistory ? "; past orders and bills kept" : ""}`,
+        userName: req.user.name,
+      });
+    });
+    res.json({ ok: true });
   })
 );
 

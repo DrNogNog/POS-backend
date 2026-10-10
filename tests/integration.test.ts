@@ -518,6 +518,36 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.deepEqual(await codes(`supplierId=${sup.data.id}`), ["ZQ-1"]);
   });
 
+  test("deleting a supplier: confirm check, blocked while an order is waiting, history kept", async () => {
+    // Never ordered from: removed completely, its items stay but lose the supplier
+    const s1 = await call("POST", "/suppliers", { name: "Delete Me Supply" });
+    const item = await call("POST", "/products", { itemCode: "ZD-1", name: "Linked item", unitCost: 3, supplierId: s1.data.id });
+    const check1 = await call("GET", `/suppliers/${s1.data.id}/delete-check`);
+    assert.equal(check1.data.items, 1);
+    assert.equal(check1.data.keepsHistory, false);
+    assert.equal(check1.data.blockedBy, null);
+    assert.equal((await call("DELETE", `/suppliers/${s1.data.id}`)).status, 200);
+    assert.ok(!(await call("GET", "/suppliers")).data.some((x: Any) => x.id === s1.data.id));
+    assert.equal((await call("GET", `/products/${item.data.id}`)).data.supplierId, null);
+    assert.equal((await call("POST", "/suppliers", { name: "Delete Me Supply" })).status, 201);
+    assert.equal((await call("POST", "/suppliers", { name: "delete me supply" })).status, 409);
+
+    // An order waiting for delivery blocks it; once cancelled it's deleted but kept for history
+    const s2 = await call("POST", "/suppliers", { name: "Has Orders Co" });
+    const po = await call("POST", "/purchase-orders", { supplierId: s2.data.id, lines: [{ productId: item.data.id, qty: 2 }] });
+    assert.equal(po.status, 201, JSON.stringify(po.data));
+    await call("POST", `/purchase-orders/${po.data.id}/ordered`);
+    const blocked = await call("DELETE", `/suppliers/${s2.data.id}`);
+    assert.equal(blocked.status, 400);
+    assert.match(blocked.data.error, /waiting for delivery/);
+    await call("POST", `/purchase-orders/${po.data.id}/cancel`);
+    assert.equal((await call("GET", `/suppliers/${s2.data.id}/delete-check`)).data.keepsHistory, true);
+    assert.equal((await call("DELETE", `/suppliers/${s2.data.id}`)).status, 200);
+    assert.ok(!(await call("GET", "/suppliers")).data.some((x: Any) => x.id === s2.data.id));
+    assert.ok((await call("GET", "/suppliers?all=1")).data.some((x: Any) => x.id === s2.data.id));
+    assert.equal((await call("GET", `/suppliers/${s2.data.id}`)).data.purchaseOrders.length, 1);
+  });
+
   test("the books balance", async () => {
     const tb = await call("GET", "/reports/trial-balance");
     assert.equal(tb.data.inBalance, true, JSON.stringify(tb.data.rows.filter((r: Any) => r.debit || r.credit)));
