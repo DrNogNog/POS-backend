@@ -548,6 +548,20 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal((await call("GET", `/suppliers/${s2.data.id}`)).data.purchaseOrders.length, 1);
   });
 
+  test("an account missing from an older database is added instead of failing", async () => {
+    const { getDb } = await import("../src/db/stores.js");
+    const db = getDb();
+    // Pick an account nothing has used yet and remove it, like a database set up before it existed
+    const unused = await db.account.findFirst({ where: { lines: { none: {} } } });
+    assert.ok(unused, "an unused account to remove");
+    await db.account.delete({ where: { code: unused!.code } });
+    const { postEntry } = await import("../src/services/journal.js");
+    await db.$transaction((tx) =>
+      postEntry(tx, { memo: "test", sourceType: "TEST", lines: [{ account: unused!.code, debit: 1, credit: 0 }, { account: unused!.code, debit: 0, credit: 1 }] })
+    );
+    assert.ok(await db.account.findUnique({ where: { code: unused!.code } }));
+  });
+
   test("the books balance", async () => {
     const tb = await call("GET", "/reports/trial-balance");
     assert.equal(tb.data.inBalance, true, JSON.stringify(tb.data.rows.filter((r: Any) => r.debit || r.credit)));
