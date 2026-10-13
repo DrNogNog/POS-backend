@@ -15,6 +15,7 @@ import { pathToFileURL } from "url";
 import { describeDatabase, getDb, disconnectAll } from "../src/db/stores.js";
 import { syncWorkerLogin } from "../src/services/workerLogin.js";
 import { CHART_OF_ACCOUNTS } from "../src/domain/accounts.js";
+import { ensureCategories } from "../src/services/categories.js";
 
 const PRICE_TIERS = [
   { code: "AA", name: "Cost (no markup)", markupPct: 0, sortOrder: 0, description: "Internal / at cost" },
@@ -24,18 +25,6 @@ const PRICE_TIERS = [
   { code: "D", name: "Level D", markupPct: 80, sortOrder: 4, description: "Retail" },
 ];
 
-const CATEGORIES = [
-  "Cabinets",
-  "Countertops",
-  "Fasteners",
-  "Safety Equipment",
-  "Sundries",
-  "Tools & Accessories",
-  "Electrical",
-  "Locks & Security",
-  "Lawn & Garden",
-  "Hardware & Houseware",
-];
 
 export async function seedStore() {
   const db = getDb();
@@ -54,9 +43,7 @@ export async function seedStore() {
   for (const t of PRICE_TIERS) {
     await db.priceTier.upsert({ where: { code: t.code }, create: t, update: {} });
   }
-  for (const [i, name] of CATEGORIES.entries()) {
-    await db.category.upsert({ where: { name }, create: { name, sortOrder: i }, update: {} });
-  }
+  await ensureCategories(db);
 
   const taxName = process.env.TAX_NAME || process.env.STORE_A_TAX_NAME || "Sales tax";
   const taxRate = Number(process.env.TAX_RATE || process.env.STORE_A_TAX_RATE || 0);

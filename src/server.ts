@@ -4,6 +4,7 @@ import { env } from "./config/env.js";
 import { describeDatabase, disconnectAll, getDb } from "./db/stores.js";
 import { syncWorkerLogin } from "./services/workerLogin.js";
 import { ensureChartOfAccounts } from "./services/journal.js";
+import { ensureCategories } from "./services/categories.js";
 
 const app = createApp();
 
@@ -14,6 +15,10 @@ const server = app.listen(env.port, () => {
   ensureChartOfAccounts(getDb())
     .then((n) => n && console.log(`Added ${n} missing account${n === 1 ? "" : "s"} to the chart of accounts`))
     .catch((e) => console.error(`Chart of accounts check failed: ${e instanceof Error ? e.message : e}`));
+  // Standard item categories (Paint, Nails, Brushes, Plumbing, ...) added if missing
+  ensureCategories(getDb())
+    .then((added) => added.length && console.log(`Added categories: ${added.join(", ")}`))
+    .catch((e) => console.error(`Category check failed: ${e instanceof Error ? e.message : e}`));
   // The worker login is kept in step with WORKER_* in .env
   syncWorkerLogin(getDb())
     .then((msg) => console.log(msg))

@@ -38,6 +38,12 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     const a = await call("GET", "/settings");
     assert.equal(Number(a.data.taxRates.find((t: Any) => t.isDefault).ratePct), 8.875);
     assert.equal(a.data.priceTiers.map((t: Any) => t.code).join(","), "AA,A,B,C,D");
+    const cats = a.data.categories.map((c: Any) => c.name);
+    for (const c of ["Paint", "Nails", "Brushes", "Electrical", "Plumbing"]) assert.ok(cats.includes(c), `category ${c}`);
+    // Running the check again doesn't add duplicates
+    const { ensureCategories } = await import("../src/services/categories.js");
+    const { getDb } = await import("../src/db/stores.js");
+    assert.deepEqual(await ensureCategories(getDb()), []);
   });
 
   test("supplier with contract terms", async () => {
