@@ -9,6 +9,7 @@ export const CATEGORIES = [
   "Brushes",
   "Electrical",
   "Plumbing",
+  "Gas",
   "Safety Equipment",
   "Sundries",
   "Tools & Accessories",
