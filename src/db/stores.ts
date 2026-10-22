@@ -8,6 +8,7 @@
 // -----------------------------------------------------------------------------
 import { PrismaClient } from "@prisma/client";
 import { env } from "../config/env.js";
+import { PgAdapterFactory } from "./pgAdapter.js";
 
 export type Db = PrismaClient;
 
@@ -20,8 +21,10 @@ export type Tx = Omit<
 let client: PrismaClient | null = null;
 
 /** Factory is swappable so tests can plug in a different client. */
+// Prisma talks to PostgreSQL through the plain-JavaScript `pg` adapter, not
+// Prisma's native engine .dll (which Windows Application Control can block).
 let createClient = (url: string): PrismaClient =>
-  new PrismaClient({ datasources: { db: { url } }, log: ["warn", "error"] });
+  new PrismaClient({ adapter: new PgAdapterFactory(url), log: ["warn", "error"] } as never);
 
 export function setClientFactory(factory: (url: string) => PrismaClient) {
   createClient = factory;

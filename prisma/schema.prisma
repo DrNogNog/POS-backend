@@ -22,7 +22,12 @@
 // =============================================================================
 
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
+  // No native engine file: queries are compiled in JavaScript/WebAssembly and
+  // sent through the `pg` adapter (src/db/pgAdapter.ts). Windows Smart App
+  // Control can't block it.
+  previewFeatures = ["queryCompiler"]
+  engineType      = "client"
 }
 
 datasource db {
