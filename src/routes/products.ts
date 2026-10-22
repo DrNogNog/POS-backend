@@ -533,9 +533,14 @@ router.post(
   route(async (req, res) => {
     const rows = parse(z.array(importRow).max(10000), req.body?.rows);
     if (rows.length === 0) throw badRequest("No rows to import");
+    // "replace" (price list): items already in the POS get the file's details.
+    // "add" (stock count): items already in the POS keep their details, get the
+    //   file's count ADDED to their stock and its note added to their description.
+    const mode = req.body?.mode === "add" ? "add" : "replace";
     const settings = await getSettings(req.db);
     let created = 0;
     let updated = 0;
+    let stockAdded = 0;
     let openingValue = 0;
     // Look up / create categories and suppliers once
     const categories = new Map((await req.db.category.findMany()).map((c) => [c.name.toLowerCase(), c.id]));
@@ -568,7 +573,29 @@ router.post(
             supplierId: r.supplier ? suppliers.get(r.supplier.toLowerCase()) ?? null : null,
           };
           const existing = await tx.product.findUnique({ where: { itemCode: r.itemCode } });
-          if (existing) {
+          if (existing && mode === "add") {
+            const note = r.description.trim();
+            const description =
+              !note || existing.description.includes(note) ? existing.description : [existing.description, note].filter(Boolean).join("; ");
+            await tx.product.update({ where: { id: existing.id }, data: { description, deletedAt: null } });
+            if (r.qtyOnHand && r.qtyOnHand > 0) {
+              const when = importDateIn(r.dateIn);
+              const cost = num(existing.unitCost);
+              openingValue = round2(openingValue + r.qtyOnHand * cost);
+              await receiveStock(tx, {
+                productId: existing.id,
+                qty: r.qtyOnHand,
+                unitCost: cost,
+                source: "OPENING",
+                sourceRef: "IMPORT",
+                date: when.dateIn ?? undefined,
+                oldInventory: when.oldInventory,
+                costUpdate: "keep",
+              });
+              stockAdded++;
+            }
+            updated++;
+          } else if (existing) {
             await tx.product.update({ where: { id: existing.id }, data: { ...data, deletedAt: null } });
             updated++;
           } else {
@@ -605,12 +632,15 @@ router.post(
       await logActivity(tx, {
         entityType: "Product",
         action: "IMPORTED",
-        summary: `Imported price list: ${created} new, ${updated} updated (${settings.name})`,
+        summary:
+          mode === "add"
+            ? `Imported stock count: ${created} new items, ${stockAdded} existing items had stock added (${settings.name})`
+            : `Imported price list: ${created} new, ${updated} updated (${settings.name})`,
         amount: openingValue || null,
         userName: req.user.name,
       });
     });
-    res.json({ created, updated });
+    res.json({ created, updated, stockAdded });
   })
 );
 

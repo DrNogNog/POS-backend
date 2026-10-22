@@ -577,6 +577,29 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.equal(ok.status, 200);
   });
 
+  test("stock-count import adds to items already in the POS", async () => {
+    const first = await call("POST", "/products/import", { rows: [{ itemCode: "ZC-1", name: "Count item", description: "front shelf", unitCost: 4, qtyOnHand: 3, dateIn: "old" }] });
+    assert.equal(first.data.created, 1);
+    const again = await call("POST", "/products/import", {
+      mode: "add",
+      rows: [
+        { itemCode: "ZC-1", name: "Different name", description: "back deck", qtyOnHand: 2, dateIn: "old" },
+        { itemCode: "ZC-2", name: "Brand new", description: "back deck", qtyOnHand: 5, dateIn: "old" },
+      ],
+    });
+    assert.equal(again.status, 200, JSON.stringify(again.data));
+    assert.equal(again.data.created, 1);
+    assert.equal(again.data.stockAdded, 1);
+    const one = (await call("GET", "/products?q=ZC-1")).data.items[0];
+    assert.equal(Number(one.qtyOnHand), 5);
+    assert.equal(one.name, "Count item");
+    assert.equal(one.description, "front shelf; back deck");
+    assert.equal(Number(one.unitCost), 4);
+    // Same file again in price-list mode doesn't touch stock
+    await call("POST", "/products/import", { rows: [{ itemCode: "ZC-1", name: "Count item", qtyOnHand: 9 }] });
+    assert.equal(Number((await call("GET", "/products?q=ZC-1")).data.items[0].qtyOnHand), 5);
+  });
+
   test("the books balance", async () => {
     const tb = await call("GET", "/reports/trial-balance");
     assert.equal(tb.data.inBalance, true, JSON.stringify(tb.data.rows.filter((r: Any) => r.debit || r.credit)));
@@ -619,7 +642,7 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
       ],
     });
     assert.equal(res.status, 200, JSON.stringify(res.data));
-    assert.deepEqual(res.data, { created: 1, updated: 1 });
+    assert.deepEqual(res.data, { created: 1, updated: 1, stockAdded: 0 });
   });
 
   test("credit or debit is recorded on estimates and invoices, and can be filtered", async () => {
