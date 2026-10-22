@@ -3,6 +3,7 @@
 export const CATEGORIES = [
   "Cabinets",
   "Countertops",
+  "Doors",
   "Fasteners",
   "Nails",
   "Paint",
