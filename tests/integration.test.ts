@@ -568,6 +568,25 @@ describe("POS end to end", { skip: !hasDatabase && "set TEST_DB_URL" }, () => {
     assert.ok(await db.account.findUnique({ where: { code: unused!.code } }));
   });
 
+  test("login lock-out: only wrong passwords count, and only for that login", async () => {
+    // Many correct logins in a row never lock anyone out
+    for (let i = 0; i < 15; i++) {
+      const ok = await api.call("POST", "/auth/login", { body: { email: "owner@test.local", password: "correct-horse-battery" } });
+      assert.equal(ok.status, 200);
+    }
+    // 10 wrong passwords lock that email...
+    for (let i = 0; i < 10; i++) {
+      const bad = await api.call("POST", "/auth/login", { body: { email: "nobody@test.local", password: "wrong" } });
+      assert.equal(bad.status, 401);
+    }
+    const locked = await api.call("POST", "/auth/login", { body: { email: "nobody@test.local", password: "wrong" } });
+    assert.equal(locked.status, 429);
+    assert.match(locked.data.error, /Try again in \d+ minute/);
+    // ...but not anyone else
+    const owner = await api.call("POST", "/auth/login", { body: { email: "owner@test.local", password: "correct-horse-battery" } });
+    assert.equal(owner.status, 200);
+  });
+
   test("the books balance", async () => {
     const tb = await call("GET", "/reports/trial-balance");
     assert.equal(tb.data.inBalance, true, JSON.stringify(tb.data.rows.filter((r: Any) => r.debit || r.credit)));

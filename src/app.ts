@@ -20,19 +20,34 @@ import { estimatesRouter, invoicesRouter, receivablesRouter } from "./routes/sal
 import { billsRouter, payablesRouter, purchaseOrdersRouter } from "./routes/purchasing.js";
 import { archivesRouter, historyRouter, reportsRouter } from "./routes/reports.js";
 
-/** Very small login rate limiter: 10 attempts / 15 min per IP. */
+/**
+ * Login lock-out: 10 WRONG passwords for the same email in 15 minutes locks
+ * that email for 15 minutes. Correct logins never count and clear the slate, so
+ * staff signing in and out all day at the same counter computer are never
+ * locked out. (Everyone at the store shares one address, so it can't be by IP.)
+ */
 function loginLimiter() {
-  const hits = new Map<string, { count: number; until: number }>();
+  const failures = new Map<string, { count: number; until: number }>();
+  const WINDOW = 15 * 60 * 1000;
   return (req: Request, res: Response, next: NextFunction) => {
-    const key = req.ip || "unknown";
+    const email = String(req.body?.email ?? "").trim().toLowerCase();
+    const key = `${req.ip || "?"}|${email}`;
     const now = Date.now();
-    const h = hits.get(key);
-    if (!h || h.until < now) {
-      hits.set(key, { count: 1, until: now + 15 * 60 * 1000 });
-      return next();
+    const f = failures.get(key);
+    if (f && f.until < now) failures.delete(key);
+    const current = failures.get(key);
+    if (current && current.count >= 10) {
+      const mins = Math.max(1, Math.ceil((current.until - now) / 60000));
+      return res.status(429).json({ error: `Too many wrong passwords for this login. Try again in ${mins} minute${mins === 1 ? "" : "s"}.` });
     }
-    h.count++;
-    if (h.count > 10) return res.status(429).json({ error: "Too many login attempts. Wait 15 minutes." });
+    res.on("finish", () => {
+      if (res.statusCode >= 200 && res.statusCode < 300) failures.delete(key);
+      else if (res.statusCode === 401 || res.statusCode === 400) {
+        const g = failures.get(key);
+        if (g && g.until >= Date.now()) g.count++;
+        else failures.set(key, { count: 1, until: Date.now() + WINDOW });
+      }
+    });
     next();
   };
 }
