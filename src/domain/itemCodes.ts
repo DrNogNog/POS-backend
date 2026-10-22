@@ -197,6 +197,19 @@ export function decodeItemCode(raw: string): DecodedItemCode {
     result.collection = COLLECTIONS[result.collectionCode];
     code = code.slice(dash + 1);
   }
+  // Warehouse tags in front of the code: a lot / PO number ("03-W3036",
+  // "026-S-W2139", "PO002-W3621"), a finish ("CHERRY-DB418") or a one-letter
+  // marker ("S-GD1530"). They are kept in the item code but skipped here.
+  const FINISHES: Record<string, string> = { CHERRY: "Cherry", SHAKER: "Shaker", OAK: "Oak", WHITE: "White" };
+  for (let guard = 0; guard < 4; guard++) {
+    const tag = code.match(/^(\d{1,3}|PO\d{1,4}|[A-Z]+)-(?=[A-Z0-9])/);
+    if (!tag) break;
+    const t = tag[1];
+    if (FINISHES[t]) result.collection = result.collection || FINISHES[t];
+    else if (/^\d|^PO\d/.test(t)) result.notes.push(`Tag #${t.replace(/^PO/, "PO ")}`);
+    else if (t.length !== 1) break; // a real type prefix like "WF-" — stop
+    code = code.slice(tag[0].length);
+  }
 
   // 2) Type prefix (letters) — longest match wins
   const letters = (code.match(/^[A-Z]+/) || [""])[0];
@@ -258,6 +271,12 @@ export function decodeItemCode(raw: string): DecodedItemCode {
     if (info.dims === "WHD" && nums.length >= 3) result.depthIn = nums[2];
   } else if (info.dims !== "none" && nums.length === 1) {
     result.widthIn = nums[0];
+  }
+
+  // Drawer base written drawers-then-width: DB418 = 4 drawers, 18" wide
+  if (prefix === "DB" && digits.length === 3) {
+    result.drawers = Number(digits[0]);
+    result.widthIn = Number(digits.slice(1));
   }
 
   // Filler like WF330 = 3" x 30", WF1.5X96
