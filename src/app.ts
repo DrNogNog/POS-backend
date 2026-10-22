@@ -2,7 +2,7 @@
 // The Express application: middleware + every route, in one readable list.
 // (server.ts starts it; tests import it directly.)
 // -----------------------------------------------------------------------------
-import express, { type NextFunction, type Request, type Response } from "express";
+import express, { type Request, type Response } from "express";
 import cors from "cors";
 import path from "path";
 import { env } from "./config/env.js";
